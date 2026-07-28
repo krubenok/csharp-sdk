@@ -13,9 +13,9 @@
     <Authors>Kyle Rubenok</Authors>
     <Copyright>Copyright (c) 2026 Kyle Rubenok</Copyright>
     <PackageTags>ModelContextProtocol;mcp;apps;elicitation;experimental</PackageTags>
-    <PackageReleaseNotes>Public prototype release paired with ModelContextProtocol.Extensions.Apps 2.0.0-rc.2 and associated with SEP-3118: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3118</PackageReleaseNotes>
+    <PackageReleaseNotes>Preserves the separate io.modelcontextprotocol/ui-elicitation preview contract while accepting SEP-3118's nested io.modelcontextprotocol/ui elicitation capability for receive-side interoperability.</PackageReleaseNotes>
     <VersionPrefix>0.2.0</VersionPrefix>
-    <VersionSuffix>preview.1</VersionSuffix>
+    <VersionSuffix>preview.2</VersionSuffix>
     <EnablePackageValidation>false</EnablePackageValidation>
     <NoWarn>$(NoWarn);MCPEXP003;MCPAELICITATION001</NoWarn>
   </PropertyGroup>

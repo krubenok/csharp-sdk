@@ -13,6 +13,8 @@ namespace ModelContextProtocol.Extensions.Apps.Elicitation;
     UrlFormat = McpAppElicitationDiagnostics.Url)]
 public static class McpAppElicitation
 {
+    private const string NestedCapabilityName = "elicitation";
+
     /// <summary>The experimental extension identifier.</summary>
     public const string ExtensionId = "io.modelcontextprotocol/ui-elicitation";
 
@@ -49,18 +51,19 @@ public static class McpAppElicitation
         return capabilities;
     }
 
-    /// <summary>Returns whether the client advertised form elicitation, MCP Apps, and this extension.</summary>
+    /// <summary>
+    /// Returns whether the client advertised form elicitation, MCP Apps, and either this prototype extension
+    /// or the nested MCP Apps capability proposed by SEP-3118.
+    /// </summary>
     public static bool IsSupported(ClientCapabilities? capabilities)
     {
         if (capabilities is null)
         {
             return false;
         }
-
         return HasFormElicitationCapability(capabilities.Elicitation) &&
             HasAppsHtmlCapability(capabilities) &&
-            capabilities.Extensions?.TryGetValue(ExtensionId, out var value) == true &&
-            IsCapabilityValue(value);
+            (HasPrototypeCapability(capabilities) || HasNestedAppsCapability(capabilities));
     }
 
     /// <summary>Associates an elicitation request with an MCP App UI resource.</summary>
@@ -249,6 +252,40 @@ public static class McpAppElicitation
 
     private static bool HasFormElicitationCapability(ElicitationCapability? capability) =>
         capability is not null && (capability.Form is not null || capability.Url is null);
+
+    private static bool HasPrototypeCapability(ClientCapabilities capabilities) =>
+        capabilities.Extensions?.TryGetValue(ExtensionId, out var value) == true &&
+        value switch
+        {
+            McpAppElicitationCapability typed => typed.Requires.Contains(
+                McpApps.ExtensionId,
+                StringComparer.OrdinalIgnoreCase),
+            JsonObject jsonObject => ContainsStringValue(jsonObject["requires"], McpApps.ExtensionId),
+            JsonElement { ValueKind: JsonValueKind.Object } element =>
+                element.TryGetProperty("requires", out var requires) &&
+                requires.ValueKind == JsonValueKind.Array &&
+                requires.EnumerateArray().Any(item =>
+                    item.ValueKind == JsonValueKind.String &&
+                    string.Equals(item.GetString(), McpApps.ExtensionId, StringComparison.OrdinalIgnoreCase)),
+            _ => false,
+        };
+
+    private static bool HasNestedAppsCapability(ClientCapabilities capabilities)
+    {
+        if (capabilities.Extensions?.TryGetValue(McpApps.ExtensionId, out var value) != true)
+        {
+            return false;
+        }
+
+        return value switch
+        {
+            JsonObject jsonObject => IsCapabilityValue(jsonObject[NestedCapabilityName]),
+            JsonElement { ValueKind: JsonValueKind.Object } element =>
+                element.TryGetProperty(NestedCapabilityName, out var elicitation) &&
+                elicitation.ValueKind == JsonValueKind.Object,
+            _ => false,
+        };
+    }
 
     private static bool HasAppsHtmlCapability(ClientCapabilities capabilities)
     {

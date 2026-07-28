@@ -35,6 +35,30 @@ This prototype therefore adds a dependent extension:
 The identifier and `requires` member are experimental. They demonstrate dependency and negotiation semantics;
 they do not claim adoption by the MCP project.
 
+This package deliberately advertises that separate extension shape. SEP-3118 instead proposes the
+following nested capability as the eventual MCP Apps contract:
+
+```json
+{
+  "capabilities": {
+    "elicitation": { "form": {} },
+    "extensions": {
+      "io.modelcontextprotocol/ui": {
+        "mimeTypes": ["text/html;profile=mcp-app"],
+        "elicitation": {}
+      }
+    }
+  }
+}
+```
+
+`McpAppElicitation.IsSupported(...)` accepts either shape for receive-side interoperability. The
+nested compatibility shape is accepted only when core form elicitation, the MCP App HTML MIME type,
+and an object-valued `elicitation` member are all present. The separate preview shape is accepted
+only when its `requires` array includes `io.modelcontextprotocol/ui`. `AddClientCapabilities(...)`
+continues to emit only the separate `io.modelcontextprotocol/ui-elicitation` contract so this
+preview package's wire identity remains explicit.
+
 ## Elicitation request convention
 
 The request remains a valid core form elicitation. The app link reuses MCP Apps metadata exactly as proposed in
@@ -98,7 +122,8 @@ performing non-idempotent work before the elicitation has resolved.
 - `AddClientCapabilities(...)` advertises form elicitation plus both extension capabilities.
 - `SetAppUi(...)` and `GetAppUi(...)` strongly type the `_meta.ui.resourceUri` convention.
 - `SetAppUiIfSupported(...)` reads the request-scoped 2026-07-28 capabilities (or legacy session capabilities) and
-  leaves the core request unchanged unless form elicitation and both app extensions were advertised.
+  leaves the core request unchanged unless form elicitation, MCP Apps, and either the separate preview extension or
+  SEP-3118's nested compatibility capability were advertised.
 - `ResolveOrRequest<T>(...)` emits the first-round MRTR request and deserializes the retried response as `T`.
 
 ## Host requirements and safety

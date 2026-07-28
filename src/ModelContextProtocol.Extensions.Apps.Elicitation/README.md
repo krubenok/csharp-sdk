@@ -22,7 +22,7 @@ but do not negotiate both app extensions receive the ordinary native form reques
 
 | Component | Version |
 | --- | --- |
-| Package | `0.2.0-preview.1` |
+| Package | `0.2.0-preview.2` |
 | C# SDK | `2.0.0-rc.2` |
 | MCP Apps | `io.modelcontextprotocol/ui` |
 | Stateless protocol | `2026-07-28` MRTR |
@@ -41,7 +41,7 @@ dotnet nuget add source "https://nuget.pkg.github.com/krubenok/index.json" \
   --store-password-in-clear-text
 
 dotnet add package Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation \
-  --version 0.2.0-preview.1 \
+  --version 0.2.0-preview.2 \
   --source krubenok-github
 ```
 
@@ -116,6 +116,33 @@ the MCP App HTML MIME type, and this prototype extension:
   }
 }
 ```
+
+`AddClientCapabilities(...)` intentionally emits the separate
+`io.modelcontextprotocol/ui-elicitation` extension. This pins the wire contract of this package and
+prevents helpers in another SDK from silently replacing it with a different capability shape.
+
+For receive-side interoperability, `IsSupported(...)` also recognizes the canonical shape proposed
+by SEP-3118:
+
+```json
+{
+  "elicitation": {
+    "form": {}
+  },
+  "extensions": {
+    "io.modelcontextprotocol/ui": {
+      "mimeTypes": ["text/html;profile=mcp-app"],
+      "elicitation": {}
+    }
+  }
+}
+```
+
+This compatibility path does not infer support from MCP Apps alone. Core form support, the MCP App
+HTML MIME type, and an object-valued `elicitation` capability are all still required. For the
+separate preview shape, `requires` must include `io.modelcontextprotocol/ui`. Servers can therefore
+interoperate with SEP-oriented hosts while preview clients continue to advertise the separately
+negotiated package contract.
 
 ## Request app-rendered input
 

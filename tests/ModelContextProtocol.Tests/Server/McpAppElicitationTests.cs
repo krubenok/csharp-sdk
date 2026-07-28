@@ -18,13 +18,22 @@ namespace ModelContextProtocol.Tests.Server;
 public class McpAppElicitationTests
 {
     [Fact]
-    public void AddClientCapabilities_AddsCoreAppsAndDependentExtension()
+    public void AddClientCapabilities_EmitsSeparatePrototypeContract()
     {
         var capabilities = McpAppElicitation.AddClientCapabilities(new ClientCapabilities());
+        var json = JsonSerializer.SerializeToNode(capabilities, McpJsonUtilities.DefaultOptions)!.AsObject();
+        var extensions = json["extensions"]!.AsObject();
+        var apps = extensions[McpApps.ExtensionId]!.AsObject();
+        var appElicitation = extensions[McpAppElicitation.ExtensionId]!.AsObject();
 
         Assert.NotNull(capabilities.Elicitation?.Form);
-        Assert.True(capabilities.Extensions?.ContainsKey("io.modelcontextprotocol/ui"));
-        Assert.True(capabilities.Extensions?.ContainsKey(McpAppElicitation.ExtensionId));
+        Assert.Contains(
+            apps["mimeTypes"]!.AsArray(),
+            value => value?.GetValue<string>() == McpApps.HtmlMimeType);
+        Assert.Null(apps["elicitation"]);
+        Assert.Contains(
+            appElicitation["requires"]!.AsArray(),
+            value => value?.GetValue<string>() == McpApps.ExtensionId);
         Assert.True(McpAppElicitation.IsSupported(capabilities));
     }
 
@@ -87,6 +96,36 @@ public class McpAppElicitationTests
         {
             ["mimeTypes"] = new JsonArray("text/html"),
         };
+
+        Assert.False(McpAppElicitation.IsSupported(capabilities));
+    }
+
+    [Fact]
+    public void IsSupported_PrototypeCapabilityMustRequireMcpApps()
+    {
+        var capabilities = McpAppElicitation.AddClientCapabilities(new ClientCapabilities());
+        capabilities.Extensions![McpAppElicitation.ExtensionId] = new JsonObject();
+
+        Assert.False(McpAppElicitation.IsSupported(capabilities));
+    }
+
+    [Fact]
+    public void IsSupported_AcceptsCanonicalSepNestedCompatibilityShape()
+    {
+        var capabilities = CreateCanonicalSepCapabilities();
+
+        Assert.True(McpAppElicitation.IsSupported(capabilities));
+        Assert.False(capabilities.Extensions?.ContainsKey(McpAppElicitation.ExtensionId));
+    }
+
+    [Fact]
+    public void IsSupported_NestedCompatibilityCapabilityMustBeAnObject()
+    {
+        var capabilities = CreateCanonicalSepCapabilities();
+        var apps = Assert.IsType<JsonElement>(capabilities.Extensions![McpApps.ExtensionId]);
+        var appsObject = JsonNode.Parse(apps.GetRawText())!.AsObject();
+        appsObject["elicitation"] = true;
+        capabilities.Extensions[McpApps.ExtensionId] = appsObject;
 
         Assert.False(McpAppElicitation.IsSupported(capabilities));
     }
@@ -186,6 +225,32 @@ public class McpAppElicitationTests
             "ui://portfolio/assign-manager");
 
         Assert.Null(request.Meta);
+    }
+
+    [Fact]
+    public void SetAppUiIfSupported_RequestScopedCanonicalCapabilitiesAddResourceUri()
+    {
+        var server = new Mock<McpServer>();
+        var context = new RequestContext<CallToolRequestParams>(
+            server.Object,
+            new JsonRpcRequest
+            {
+                Id = new RequestId(1),
+                Method = RequestMethods.ToolsCall,
+                Context = new JsonRpcMessageContext
+                {
+                    ProtocolVersion = McpProtocolVersions.July2026ProtocolVersion,
+                    ClientCapabilities = CreateCanonicalSepCapabilities(),
+                },
+            },
+            new CallToolRequestParams { Name = "assign_account_manager" });
+
+        var request = McpAppElicitation.SetAppUiIfSupported(
+            CreateRequest(),
+            context,
+            "ui://portfolio/assign-manager");
+
+        Assert.Equal("ui://portfolio/assign-manager", McpAppElicitation.GetAppUi(request)?.ResourceUri);
     }
 
     [Fact]
@@ -304,6 +369,23 @@ public class McpAppElicitationTests
         Message = "Choose a manager.",
         RequestedSchema = new ElicitRequestParams.RequestSchema(),
     };
+
+    private static ClientCapabilities CreateCanonicalSepCapabilities() =>
+        JsonSerializer.Deserialize<ClientCapabilities>(
+            """
+            {
+              "elicitation": {
+                "form": {}
+              },
+              "extensions": {
+                "io.modelcontextprotocol/ui": {
+                  "mimeTypes": ["text/html;profile=mcp-app"],
+                  "elicitation": {}
+                }
+              }
+            }
+            """,
+            McpJsonUtilities.DefaultOptions)!;
 }
 
 public sealed class AssignmentResponse
@@ -374,6 +456,43 @@ public sealed class McpAppElicitationCompatibilityTests : ClientServerTestBase
         ElicitRequestParams? observedRequest = null;
         var options = CreateClientOptions(
             McpAppElicitation.AddClientCapabilities(new ClientCapabilities()));
+        options.Handlers.ElicitationHandler = (request, _) =>
+        {
+            observedRequest = request;
+            return new ValueTask<ElicitResult>(CreateAcceptedResult());
+        };
+
+        await using var client = await CreateMcpClientForServer(options);
+        var result = await client.CallToolAsync(
+            "complete-assignment",
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.NotNull(observedRequest);
+        Assert.Equal(
+            "ui://portfolio/assign-manager",
+            McpAppElicitation.GetAppUi(observedRequest)?.ResourceUri);
+        Assert.Equal("app:mgr-priya", GetText(result));
+    }
+
+    [Fact]
+    public async Task CanonicalSepClient_ReceivesResourceHintAndCompletesMrtrRetry()
+    {
+        ElicitRequestParams? observedRequest = null;
+        var options = CreateClientOptions(JsonSerializer.Deserialize<ClientCapabilities>(
+            """
+            {
+              "elicitation": {
+                "form": {}
+              },
+              "extensions": {
+                "io.modelcontextprotocol/ui": {
+                  "mimeTypes": ["text/html;profile=mcp-app"],
+                  "elicitation": {}
+                }
+              }
+            }
+            """,
+            McpJsonUtilities.DefaultOptions)!);
         options.Handlers.ElicitationHandler = (request, _) =>
         {
             observedRequest = request;
