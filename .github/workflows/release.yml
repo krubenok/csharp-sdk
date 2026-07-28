@@ -7,8 +7,8 @@
 # - Push to `release/**`: every commit to a release branch produces a CI-suffixed
 #   package and publishes it to the GitHub package registry.
 #
-# - Manual `workflow_dispatch` (any branch): same outputs as a scheduled/push build,
-#   or publishes the elicitation package at the version committed in its project.
+# - Manual `workflow_dispatch` (any branch): same outputs as a scheduled/push build;
+#   accepts a `version_suffix_override` input.
 #
 # - GitHub Release published (any branch's tag): publishes the version from
 #   `src/Directory.Build.props` to the GitHub package registry AND NuGet.org.
@@ -32,15 +32,8 @@ on:
 
   workflow_dispatch:
     inputs:
-      package:
-        description: Package set to publish
-        type: choice
-        options:
-          - all
-          - elicitation
-        default: all
       version_suffix_override:
-        description: Version suffix override (all packages only)
+        description: Version suffix override
         type: string
 
   release:
@@ -88,8 +81,7 @@ jobs:
       contents: read
 
     env:
-      pack_target: ${{ inputs.package == 'elicitation' && 'src/ModelContextProtocol.Extensions.Apps.Elicitation/ModelContextProtocol.Extensions.Apps.Elicitation.csproj' || '' }}
-      version_suffix_args: ${{ github.event_name != 'release' && inputs.package != 'elicitation' && format('--version-suffix "{0}"', inputs.version_suffix_override || format('ci.{0}', github.run_number)) || '' }}
+      version_suffix_args: ${{ github.event_name != 'release' && format('--version-suffix "{0}"', inputs.version_suffix_override || format('ci.{0}', github.run_number)) || '' }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,26 +95,9 @@ jobs:
 
       - name: Pack
         run: dotnet pack
-          ${{ env.pack_target }}
           ${{ env.version_suffix_args }}
           --configuration Release
           --output "${{ github.workspace }}/artifacts/packages"
-
-      - name: Validate elicitation package dependency
-        if: inputs.package == 'elicitation'
-        shell: pwsh
-        run: |
-          $packageVersion = (& dotnet msbuild $env:pack_target -getProperty:PackageVersion -nologo).Trim()
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to read the elicitation package version."
-          }
-
-          ./.github/scripts/Assert-PackageDependency.ps1 `
-            -PackagePath "${{ github.workspace }}/artifacts/packages/Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation.$packageVersion.nupkg" `
-            -PackageId "Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation" `
-            -PackageVersion $packageVersion `
-            -DependencyId "ModelContextProtocol.Extensions.Apps" `
-            -DependencyVersion "2.0.0-rc.2"
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
