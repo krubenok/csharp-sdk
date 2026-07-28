@@ -1,7 +1,7 @@
 # MCP Apps as elicitation UI: prototype extension
 
 > [!WARNING]
-> This separate-extension design is retained for private prototyping while
+> This separate-extension design is retained as a public prototype while
 > [SEP-3118](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3118) proposes folding the
 > capability into MCP Apps itself. The unofficial preview package is
 > `Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation`.

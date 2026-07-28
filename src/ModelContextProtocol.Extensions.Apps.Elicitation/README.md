@@ -8,7 +8,7 @@
 > [SEP-3118](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3118) is reviewed.
 
 `Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation` provides strongly typed conventions for
-using an MCP App as the renderer for a core form elicitation. This private preview intentionally
+using an MCP App as the renderer for a core form elicitation. This public preview intentionally
 keeps app-rendered elicitation as a separately negotiated extension:
 
 - core form elicitation;
@@ -22,17 +22,16 @@ but do not negotiate both app extensions receive the ordinary native form reques
 
 | Component | Version |
 | --- | --- |
-| Package | `0.1.0-preview.1` |
-| C# SDK | `2.0.0-preview.3` |
+| Package | `0.2.0-preview.1` |
+| C# SDK | `2.0.0-rc.2` |
 | MCP Apps | `io.modelcontextprotocol/ui` |
 | Stateless protocol | `2026-07-28` MRTR |
 
 ## Install from GitHub Packages
 
-Authenticate to Kyle Rubenok's GitHub Packages feed with a classic personal access token that has
-`read:packages`. Your GitHub account must also have access to the private
-[`krubenok/mcp-app-elicitation-packages`](https://github.com/krubenok/mcp-app-elicitation-packages)
-repository. Do not commit the token.
+The package is public. GitHub's NuGet registry still requires authentication, so configure Kyle
+Rubenok's feed with a classic personal access token that has `read:packages`. Do not commit the
+token.
 
 ```shell
 dotnet nuget add source "https://nuget.pkg.github.com/krubenok/index.json" \
@@ -42,7 +41,7 @@ dotnet nuget add source "https://nuget.pkg.github.com/krubenok/index.json" \
   --store-password-in-clear-text
 
 dotnet add package Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation \
-  --version 0.1.0-preview.1 \
+  --version 0.2.0-preview.1 \
   --source krubenok-github
 ```
 
