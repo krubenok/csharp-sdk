@@ -7,6 +7,7 @@ namespace ModelContextProtocol.Extensions.Apps.Elicitation;
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(McpAppElicitationCapability))]
 [JsonSerializable(typeof(McpAppElicitationMeta))]
+[JsonSerializable(typeof(McpUiClientCapabilities))]
 internal sealed partial class McpAppElicitationJsonContext : JsonSerializerContext
 {
 }

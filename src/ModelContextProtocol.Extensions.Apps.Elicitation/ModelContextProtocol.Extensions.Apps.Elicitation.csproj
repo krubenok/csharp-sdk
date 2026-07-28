@@ -4,11 +4,20 @@
     <TargetFrameworks>net10.0;net9.0;net8.0;netstandard2.0</TargetFrameworks>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <IsPackable>true</IsPackable>
-    <PackageId>ModelContextProtocol.Extensions.Apps.Elicitation</PackageId>
-    <Description>Experimental conventions for using MCP Apps as custom form elicitation UI.</Description>
+    <PackageId>Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation</PackageId>
+    <Title>Experimental MCP Apps Elicitation Extension</Title>
+    <Description>Unofficial preview conventions for using MCP Apps as custom form elicitation UI.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/krubenok/csharp-sdk/tree/feature/apps-elicitation</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/krubenok/csharp-sdk</RepositoryUrl>
+    <Authors>Kyle Rubenok</Authors>
+    <Copyright>Copyright (c) 2026 Kyle Rubenok</Copyright>
+    <PackageTags>ModelContextProtocol;mcp;apps;elicitation;experimental</PackageTags>
+    <PackageReleaseNotes>Private prototype release associated with SEP-3118: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3118</PackageReleaseNotes>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionSuffix>preview.1</VersionSuffix>
     <EnablePackageValidation>false</EnablePackageValidation>
-    <NoWarn>$(NoWarn);MCPEXP003</NoWarn>
+    <NoWarn>$(NoWarn);MCPEXP003;MCPAELICITATION001</NoWarn>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(TargetFramework)' != 'netstandard2.0'">
@@ -27,6 +36,8 @@
              Link="Polyfills\RequiredMemberAttribute.cs" />
     <Compile Include="..\Common\Polyfills\System\Runtime\CompilerServices\CompilerFeatureRequiredAttribute.cs"
              Link="Polyfills\CompilerFeatureRequiredAttribute.cs" />
+    <Compile Include="..\Common\Polyfills\System\Diagnostics\CodeAnalysis\ExperimentalAttribute.cs"
+             Link="Polyfills\ExperimentalAttribute.cs" />
   </ItemGroup>
 
   <ItemGroup>

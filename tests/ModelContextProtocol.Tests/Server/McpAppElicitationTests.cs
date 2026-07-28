@@ -1,11 +1,17 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Extensions.Apps;
 using ModelContextProtocol.Extensions.Apps.Elicitation;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Moq;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+
+#pragma warning disable MCPEXP003
+#pragma warning disable MCPAELICITATION001
 
 namespace ModelContextProtocol.Tests.Server;
 
@@ -23,12 +29,101 @@ public class McpAppElicitationTests
     }
 
     [Fact]
+    public void AddClientCapabilities_MergesExistingSettings()
+    {
+        var apps = new JsonObject
+        {
+            ["mimeTypes"] = new JsonArray("application/example"),
+            ["customSetting"] = true,
+        };
+        var appElicitation = new JsonObject
+        {
+            ["customSetting"] = true,
+        };
+        var capabilities = new ClientCapabilities
+        {
+            Extensions = new Dictionary<string, object>
+            {
+                [McpApps.ExtensionId] = apps,
+                [McpAppElicitation.ExtensionId] = appElicitation,
+            },
+        };
+
+        McpAppElicitation.AddClientCapabilities(capabilities);
+
+        Assert.True(apps["customSetting"]?.GetValue<bool>());
+        Assert.Contains(
+            apps["mimeTypes"]!.AsArray(),
+            value => value?.GetValue<string>() == McpApps.HtmlMimeType);
+        Assert.True(appElicitation["customSetting"]?.GetValue<bool>());
+        Assert.Contains(
+            appElicitation["requires"]!.AsArray(),
+            value => value?.GetValue<string>() == McpApps.ExtensionId);
+    }
+
+    [Fact]
+    public void IsSupported_BackwardCompatibleEmptyCoreElicitationCapabilityIsFormCapable()
+    {
+        var capabilities = McpAppElicitation.AddClientCapabilities(new ClientCapabilities());
+        capabilities.Elicitation = new ElicitationCapability();
+
+        Assert.True(McpAppElicitation.IsSupported(capabilities));
+    }
+
+    [Fact]
+    public void IsSupported_UrlOnlyCoreElicitationCapabilityIsNotFormCapable()
+    {
+        var capabilities = McpAppElicitation.AddClientCapabilities(new ClientCapabilities());
+        capabilities.Elicitation = new ElicitationCapability { Url = new UrlElicitationCapability() };
+
+        Assert.False(McpAppElicitation.IsSupported(capabilities));
+    }
+
+    [Fact]
+    public void IsSupported_AppsCapabilityWithoutMcpAppMimeTypeIsNotSupported()
+    {
+        var capabilities = McpAppElicitation.AddClientCapabilities(new ClientCapabilities());
+        capabilities.Extensions![McpApps.ExtensionId] = new JsonObject
+        {
+            ["mimeTypes"] = new JsonArray("text/html"),
+        };
+
+        Assert.False(McpAppElicitation.IsSupported(capabilities));
+    }
+
+    [Fact]
+    public void WithMcpAppElicitation_AdvertisesAppsAndDependentExtension()
+    {
+        var services = new ServiceCollection();
+        services.AddMcpServer().WithMcpAppElicitation();
+
+        using var provider = services.BuildServiceProvider();
+        var capabilities = provider.GetRequiredService<IOptions<McpServerOptions>>().Value.Capabilities;
+
+        Assert.True(capabilities?.Extensions?.ContainsKey(McpApps.ExtensionId));
+        var extension = Assert.IsType<JsonObject>(
+            capabilities?.Extensions?[McpAppElicitation.ExtensionId]);
+        Assert.Contains(
+            extension["requires"]!.AsArray(),
+            value => value?.GetValue<string>() == McpApps.ExtensionId);
+    }
+
+    [Fact]
     public void SetAppUi_RoundTripsResourceUri()
     {
         var request = McpAppElicitation.SetAppUi(CreateRequest(), "ui://portfolio/assign-manager");
 
         Assert.Equal("ui://portfolio/assign-manager", McpAppElicitation.GetAppUi(request)?.ResourceUri);
         Assert.Equal("ui://portfolio/assign-manager", request.Meta?["ui"]?["resourceUri"]?.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("https://example.com/app")]
+    [InlineData("not-a-uri")]
+    public void SetAppUi_RejectsInvalidResourceUri(string resourceUri)
+    {
+        Assert.Throws<ArgumentException>(() => McpAppElicitation.SetAppUi(CreateRequest(), resourceUri));
     }
 
     [Fact]
@@ -149,6 +244,60 @@ public class McpAppElicitationTests
         Assert.True(result.Content?.Confirmed);
         Assert.Equal("mgr-priya", result.Content?.SelectedManagerId);
     }
+
+    [Fact]
+    public void ResolveOrRequest_AcceptedResponseWithoutContentIsInvalid()
+    {
+        var exception = Assert.Throws<McpProtocolException>(() => McpAppElicitation.ResolveOrRequest(
+            CreateMrtrServer(),
+            CreateRetryParams(new ElicitResult { Action = "accept" }),
+            "manager-assignment",
+            CreateRequest(),
+            TestJsonContext.Default.AssignmentResponse));
+
+        Assert.Equal(McpErrorCode.InvalidParams, exception.ErrorCode);
+        Assert.Contains("did not contain content", exception.Message);
+    }
+
+    [Fact]
+    public void ResolveOrRequest_ContentThatDoesNotMatchTypedContractIsInvalid()
+    {
+        var exception = Assert.Throws<McpProtocolException>(() => McpAppElicitation.ResolveOrRequest(
+            CreateMrtrServer(),
+            CreateRetryParams(new ElicitResult
+            {
+                Action = "accept",
+                Content = new Dictionary<string, JsonElement>
+                {
+                    ["confirmed"] = JsonSerializer.SerializeToElement("not-a-boolean"),
+                    ["selectedManagerId"] = JsonSerializer.SerializeToElement("mgr-priya"),
+                },
+            }),
+            "manager-assignment",
+            CreateRequest(),
+            TestJsonContext.Default.AssignmentResponse));
+
+        Assert.Equal(McpErrorCode.InvalidParams, exception.ErrorCode);
+        Assert.Contains(nameof(AssignmentResponse), exception.Message);
+        Assert.IsType<JsonException>(exception.InnerException);
+    }
+
+    private static McpServer CreateMrtrServer()
+    {
+        var server = new Mock<McpServer>();
+        server.SetupGet(s => s.IsMrtrSupported).Returns(true);
+        return server.Object;
+    }
+
+    private static CallToolRequestParams CreateRetryParams(ElicitResult result) => new()
+    {
+        Name = "assign_account_manager",
+        RequestState = "state-v1",
+        InputResponses = new Dictionary<string, InputResponse>
+        {
+            ["manager-assignment"] = InputResponse.FromElicitResult(result),
+        },
+    };
 
     private static ElicitRequestParams CreateRequest() => new()
     {

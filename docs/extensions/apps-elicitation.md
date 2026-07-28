@@ -1,5 +1,11 @@
 # MCP Apps as elicitation UI: prototype extension
 
+> [!WARNING]
+> This separate-extension design is retained for private prototyping while
+> [SEP-3118](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3118) proposes folding the
+> capability into MCP Apps itself. The unofficial preview package is
+> `Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation`.
+
 This prototype composes core form elicitation, MCP Apps, and Multi Round-Trip Requests (MRTR) into one
 interoperable flow. It is informed by ext-apps issue #511, discussion #514, PR #531, and the deferred-tool
 workaround in PR #390.

@@ -2,11 +2,15 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Nodes;
 
 namespace ModelContextProtocol.Extensions.Apps.Elicitation;
 
 /// <summary>Builder extensions for app-rendered elicitation.</summary>
+[Experimental(
+    McpAppElicitationDiagnostics.DiagnosticId,
+    UrlFormat = McpAppElicitationDiagnostics.Url)]
 public static class McpAppElicitationBuilderExtensions
 {
     /// <summary>Enables the app-elicitation extension and its required MCP Apps extension.</summary>
