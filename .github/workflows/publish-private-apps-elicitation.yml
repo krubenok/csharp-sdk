@@ -1,0 +1,75 @@
+name: Publish private MCP Apps elicitation preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag, or commit containing the package source
+        type: string
+        required: true
+        default: feature/apps-elicitation
+      version_suffix:
+        description: Prerelease suffix
+        type: string
+        required: true
+        default: preview.1
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    if: ${{ github.repository == 'krubenok/csharp-sdk' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+        with:
+          dotnet-version: |
+            10.0.x
+            9.0.x
+
+      - name: Test the extension
+        run: >-
+          dotnet test
+          tests/ModelContextProtocol.Tests/ModelContextProtocol.Tests.csproj
+          --configuration Release
+          --framework net10.0
+          --filter FullyQualifiedName~McpAppElicitation
+
+      - name: Pack the extension
+        run: >-
+          dotnet pack
+          src/ModelContextProtocol.Extensions.Apps.Elicitation/ModelContextProtocol.Extensions.Apps.Elicitation.csproj
+          --configuration Release
+          --version-suffix "${{ inputs.version_suffix }}"
+          --output "${{ github.workspace }}/artifacts/packages"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apps-elicitation-${{ inputs.version_suffix }}
+          path: ${{ github.workspace }}/artifacts/packages
+
+      - name: Authenticate to GitHub Packages
+        run: >-
+          dotnet nuget add source
+          "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+          --name github
+          --username "${{ github.actor }}"
+          --password "${{ secrets.GITHUB_TOKEN }}"
+          --store-password-in-clear-text
+
+      - name: Publish the extension
+        run: >-
+          dotnet nuget push
+          "${{ github.workspace }}/artifacts/packages/Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation.0.1.0-${{ inputs.version_suffix }}.nupkg"
+          --source github
+          --api-key "${{ secrets.GITHUB_TOKEN }}"
+          --skip-duplicate
