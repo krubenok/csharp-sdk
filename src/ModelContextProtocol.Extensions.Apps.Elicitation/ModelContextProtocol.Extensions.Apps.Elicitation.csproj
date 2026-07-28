@@ -13,9 +13,9 @@
     <Authors>Kyle Rubenok</Authors>
     <Copyright>Copyright (c) 2026 Kyle Rubenok</Copyright>
     <PackageTags>ModelContextProtocol;mcp;apps;elicitation;experimental</PackageTags>
-    <PackageReleaseNotes>Clarifies the pre-approval negotiation contract: dual nested-plus-gate clients activate app UI, gate-only 0.2 clients remain compatible, and nested-only clients fail closed until SEP-3118 is approved.</PackageReleaseNotes>
+    <PackageReleaseNotes>Republishes the preview.3 runtime contract with corrected package metadata that pins ModelContextProtocol.Extensions.Apps 2.0.0-rc.2.</PackageReleaseNotes>
     <VersionPrefix>0.3.0</VersionPrefix>
-    <VersionSuffix>preview.3</VersionSuffix>
+    <VersionSuffix>preview.4</VersionSuffix>
     <EnablePackageValidation>false</EnablePackageValidation>
     <NoWarn>$(NoWarn);MCPEXP003;MCPAELICITATION001</NoWarn>
   </PropertyGroup>

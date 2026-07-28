@@ -382,8 +382,8 @@ public class McpAppElicitationTests
                     Action = "accept",
                     Content = new Dictionary<string, JsonElement>
                     {
-                        ["confirmed"] = JsonSerializer.SerializeToElement(true),
-                        ["selectedManagerId"] = JsonSerializer.SerializeToElement("mgr-priya"),
+                        ["confirmed"] = JsonSerializer.SerializeToElement(true, McpJsonUtilities.DefaultOptions),
+                        ["selectedManagerId"] = JsonSerializer.SerializeToElement("mgr-priya", McpJsonUtilities.DefaultOptions),
                     },
                 }),
             },
@@ -425,8 +425,8 @@ public class McpAppElicitationTests
                 Action = "accept",
                 Content = new Dictionary<string, JsonElement>
                 {
-                    ["confirmed"] = JsonSerializer.SerializeToElement("not-a-boolean"),
-                    ["selectedManagerId"] = JsonSerializer.SerializeToElement("mgr-priya"),
+                    ["confirmed"] = JsonSerializer.SerializeToElement("not-a-boolean", McpJsonUtilities.DefaultOptions),
+                    ["selectedManagerId"] = JsonSerializer.SerializeToElement("mgr-priya", McpJsonUtilities.DefaultOptions),
                 },
             }),
             "manager-assignment",
@@ -692,8 +692,8 @@ public sealed class McpAppElicitationCompatibilityTests : ClientServerTestBase
         Action = "accept",
         Content = new Dictionary<string, JsonElement>
         {
-            ["confirmed"] = JsonSerializer.SerializeToElement(true),
-            ["selectedManagerId"] = JsonSerializer.SerializeToElement("mgr-priya"),
+            ["confirmed"] = JsonSerializer.SerializeToElement(true, McpJsonUtilities.DefaultOptions),
+            ["selectedManagerId"] = JsonSerializer.SerializeToElement("mgr-priya", McpJsonUtilities.DefaultOptions),
         },
     };
 
