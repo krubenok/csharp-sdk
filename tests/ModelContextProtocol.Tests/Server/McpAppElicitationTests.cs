@@ -561,11 +561,34 @@ public sealed class McpAppElicitationCompatibilityTests : ClientServerTestBase
     }
 
     [Fact]
-    public async Task AppElicitationClient_ReceivesResourceHintAndCompletesMrtrRetry()
+    public async Task DualShapeClient_ReceivesResourceHintAndCompletesMrtrRetry()
     {
         ElicitRequestParams? observedRequest = null;
         var options = CreateClientOptions(
             McpAppElicitation.AddClientCapabilities(new ClientCapabilities()));
+        options.Handlers.ElicitationHandler = (request, _) =>
+        {
+            observedRequest = request;
+            return new ValueTask<ElicitResult>(CreateAcceptedResult());
+        };
+
+        await using var client = await CreateMcpClientForServer(options);
+        var result = await client.CallToolAsync(
+            "complete-assignment",
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.NotNull(observedRequest);
+        Assert.Equal(
+            "ui://portfolio/assign-manager",
+            McpAppElicitation.GetAppUi(observedRequest)?.ResourceUri);
+        Assert.Equal("app:mgr-priya", GetText(result));
+    }
+
+    [Fact]
+    public async Task LegacyGateOnlyClient_ReceivesResourceHintAndCompletesMrtrRetry()
+    {
+        ElicitRequestParams? observedRequest = null;
+        var options = CreateClientOptions(CreateLegacyGateOnlyCapabilities());
         options.Handlers.ElicitationHandler = (request, _) =>
         {
             observedRequest = request;
@@ -644,6 +667,25 @@ public sealed class McpAppElicitationCompatibilityTests : ClientServerTestBase
         ProtocolVersion = McpProtocolVersions.July2026ProtocolVersion,
         Capabilities = capabilities,
     };
+
+    private static ClientCapabilities CreateLegacyGateOnlyCapabilities() =>
+        JsonSerializer.Deserialize<ClientCapabilities>(
+            """
+            {
+              "elicitation": {
+                "form": {}
+              },
+              "extensions": {
+                "io.modelcontextprotocol/ui": {
+                  "mimeTypes": ["text/html;profile=mcp-app"]
+                },
+                "io.modelcontextprotocol/ui-elicitation": {
+                  "requires": ["io.modelcontextprotocol/ui"]
+                }
+              }
+            }
+            """,
+            McpJsonUtilities.DefaultOptions)!;
 
     private static ElicitResult CreateAcceptedResult() => new()
     {

@@ -22,7 +22,7 @@ but do not negotiate MCP Apps elicitation receive the ordinary native form reque
 
 | Component | Version |
 | --- | --- |
-| Package | `0.3.0-preview.2` |
+| Package | `0.3.0-preview.3` |
 | C# SDK | `2.0.0-rc.2` |
 | MCP Apps | `io.modelcontextprotocol/ui` |
 | Stateless protocol | `2026-07-28` MRTR |
@@ -41,7 +41,7 @@ dotnet nuget add source "https://nuget.pkg.github.com/krubenok/index.json" \
   --store-password-in-clear-text
 
 dotnet add package Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation \
-  --version 0.3.0-preview.2 \
+  --version 0.3.0-preview.3 \
   --source krubenok-github
 ```
 
