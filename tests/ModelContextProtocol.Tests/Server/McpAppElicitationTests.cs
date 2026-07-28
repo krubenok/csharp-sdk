@@ -18,22 +18,20 @@ namespace ModelContextProtocol.Tests.Server;
 public class McpAppElicitationTests
 {
     [Fact]
-    public void AddClientCapabilities_EmitsSeparatePrototypeContract()
+    public void AddClientCapabilities_EmitsCanonicalSepContract()
     {
         var capabilities = McpAppElicitation.AddClientCapabilities(new ClientCapabilities());
         var json = JsonSerializer.SerializeToNode(capabilities, McpJsonUtilities.DefaultOptions)!.AsObject();
         var extensions = json["extensions"]!.AsObject();
         var apps = extensions[McpApps.ExtensionId]!.AsObject();
-        var appElicitation = extensions[McpAppElicitation.ExtensionId]!.AsObject();
 
         Assert.NotNull(capabilities.Elicitation?.Form);
+        Assert.Single(extensions);
         Assert.Contains(
             apps["mimeTypes"]!.AsArray(),
             value => value?.GetValue<string>() == McpApps.HtmlMimeType);
-        Assert.Null(apps["elicitation"]);
-        Assert.Contains(
-            appElicitation["requires"]!.AsArray(),
-            value => value?.GetValue<string>() == McpApps.ExtensionId);
+        Assert.IsType<JsonObject>(apps["elicitation"]);
+        Assert.False(extensions.ContainsKey(McpAppElicitation.ExtensionId));
         Assert.True(McpAppElicitation.IsSupported(capabilities));
     }
 
@@ -45,16 +43,19 @@ public class McpAppElicitationTests
             ["mimeTypes"] = new JsonArray("application/example"),
             ["customSetting"] = true,
         };
-        var appElicitation = new JsonObject
-        {
-            ["customSetting"] = true,
-        };
         var capabilities = new ClientCapabilities
         {
             Extensions = new Dictionary<string, object>
             {
                 [McpApps.ExtensionId] = apps,
-                [McpAppElicitation.ExtensionId] = appElicitation,
+                [McpAppElicitation.ExtensionId] = new JsonObject
+                {
+                    ["requires"] = new JsonArray(McpApps.ExtensionId),
+                },
+                ["com.example/other"] = new JsonObject
+                {
+                    ["customSetting"] = true,
+                },
             },
         };
 
@@ -64,10 +65,10 @@ public class McpAppElicitationTests
         Assert.Contains(
             apps["mimeTypes"]!.AsArray(),
             value => value?.GetValue<string>() == McpApps.HtmlMimeType);
-        Assert.True(appElicitation["customSetting"]?.GetValue<bool>());
-        Assert.Contains(
-            appElicitation["requires"]!.AsArray(),
-            value => value?.GetValue<string>() == McpApps.ExtensionId);
+        Assert.IsType<JsonObject>(apps["elicitation"]);
+        Assert.False(capabilities.Extensions.ContainsKey(McpAppElicitation.ExtensionId));
+        Assert.True(
+            Assert.IsType<JsonObject>(capabilities.Extensions["com.example/other"])["customSetting"]?.GetValue<bool>());
     }
 
     [Fact]
@@ -103,14 +104,20 @@ public class McpAppElicitationTests
     [Fact]
     public void IsSupported_PrototypeCapabilityMustRequireMcpApps()
     {
-        var capabilities = McpAppElicitation.AddClientCapabilities(new ClientCapabilities());
+        var capabilities = CreateLegacyPreviewCapabilities();
         capabilities.Extensions![McpAppElicitation.ExtensionId] = new JsonObject();
 
         Assert.False(McpAppElicitation.IsSupported(capabilities));
     }
 
     [Fact]
-    public void IsSupported_AcceptsCanonicalSepNestedCompatibilityShape()
+    public void IsSupported_AcceptsLegacySeparatePreviewShape()
+    {
+        Assert.True(McpAppElicitation.IsSupported(CreateLegacyPreviewCapabilities()));
+    }
+
+    [Fact]
+    public void IsSupported_AcceptsCanonicalSepNestedShape()
     {
         var capabilities = CreateCanonicalSepCapabilities();
 
@@ -119,7 +126,7 @@ public class McpAppElicitationTests
     }
 
     [Fact]
-    public void IsSupported_NestedCompatibilityCapabilityMustBeAnObject()
+    public void IsSupported_CanonicalNestedCapabilityMustBeAnObject()
     {
         var capabilities = CreateCanonicalSepCapabilities();
         var apps = Assert.IsType<JsonElement>(capabilities.Extensions![McpApps.ExtensionId]);
@@ -131,20 +138,84 @@ public class McpAppElicitationTests
     }
 
     [Fact]
-    public void WithMcpAppElicitation_AdvertisesAppsAndDependentExtension()
+    public void WithMcpAppElicitation_AdvertisesCanonicalNestedAppsCapability()
     {
         var services = new ServiceCollection();
-        services.AddMcpServer().WithMcpAppElicitation();
+        services.AddMcpServer(options =>
+        {
+            options.Capabilities = new ServerCapabilities
+            {
+                Extensions = new Dictionary<string, object>
+                {
+                    [McpAppElicitation.ExtensionId] = new JsonObject
+                    {
+                        ["requires"] = new JsonArray(McpApps.ExtensionId),
+                    },
+                },
+            };
+        }).WithMcpAppElicitation();
 
         using var provider = services.BuildServiceProvider();
         var capabilities = provider.GetRequiredService<IOptions<McpServerOptions>>().Value.Capabilities;
 
-        Assert.True(capabilities?.Extensions?.ContainsKey(McpApps.ExtensionId));
-        var extension = Assert.IsType<JsonObject>(
-            capabilities?.Extensions?[McpAppElicitation.ExtensionId]);
+        Assert.Single(capabilities!.Extensions!);
+        var apps = Assert.IsType<JsonObject>(capabilities?.Extensions?[McpApps.ExtensionId]);
+        Assert.IsType<JsonObject>(apps["elicitation"]);
+        Assert.False(capabilities?.Extensions?.ContainsKey(McpAppElicitation.ExtensionId));
+    }
+
+    [Fact]
+    public void WithMcpAppElicitation_MergesTypedAppsCapability()
+    {
+        var services = new ServiceCollection();
+        services.AddMcpServer(options =>
+        {
+            options.Capabilities = new ServerCapabilities
+            {
+                Extensions = new Dictionary<string, object>
+                {
+                    [McpApps.ExtensionId] = new McpUiClientCapabilities
+                    {
+                        MimeTypes = ["application/example"],
+                    },
+                },
+            };
+        }).WithMcpAppElicitation();
+
+        using var provider = services.BuildServiceProvider();
+        var capabilities = provider.GetRequiredService<IOptions<McpServerOptions>>().Value.Capabilities;
+
+        var apps = Assert.IsType<JsonObject>(capabilities?.Extensions?[McpApps.ExtensionId]);
         Assert.Contains(
-            extension["requires"]!.AsArray(),
-            value => value?.GetValue<string>() == McpApps.ExtensionId);
+            apps["mimeTypes"]!.AsArray(),
+            value => value?.GetValue<string>() == "application/example");
+        Assert.IsType<JsonObject>(apps["elicitation"]);
+    }
+
+    [Fact]
+    public void WithMcpAppElicitation_MergesDictionaryAppsCapability()
+    {
+        var services = new ServiceCollection();
+        services.AddMcpServer(options =>
+        {
+            options.Capabilities = new ServerCapabilities
+            {
+                Extensions = new Dictionary<string, object>
+                {
+                    [McpApps.ExtensionId] = new Dictionary<string, object>
+                    {
+                        ["customSetting"] = true,
+                    },
+                },
+            };
+        }).WithMcpAppElicitation();
+
+        using var provider = services.BuildServiceProvider();
+        var capabilities = provider.GetRequiredService<IOptions<McpServerOptions>>().Value.Capabilities;
+
+        var apps = Assert.IsType<JsonObject>(capabilities?.Extensions?[McpApps.ExtensionId]);
+        Assert.True(apps["customSetting"]?.GetValue<bool>());
+        Assert.IsType<JsonObject>(apps["elicitation"]);
     }
 
     [Fact]
@@ -381,6 +452,25 @@ public class McpAppElicitationTests
                 "io.modelcontextprotocol/ui": {
                   "mimeTypes": ["text/html;profile=mcp-app"],
                   "elicitation": {}
+                }
+              }
+            }
+            """,
+            McpJsonUtilities.DefaultOptions)!;
+
+    private static ClientCapabilities CreateLegacyPreviewCapabilities() =>
+        JsonSerializer.Deserialize<ClientCapabilities>(
+            """
+            {
+              "elicitation": {
+                "form": {}
+              },
+              "extensions": {
+                "io.modelcontextprotocol/ui": {
+                  "mimeTypes": ["text/html;profile=mcp-app"]
+                },
+                "io.modelcontextprotocol/ui-elicitation": {
+                  "requires": ["io.modelcontextprotocol/ui"]
                 }
               }
             }

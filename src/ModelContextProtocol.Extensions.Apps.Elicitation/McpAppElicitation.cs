@@ -13,9 +13,9 @@ namespace ModelContextProtocol.Extensions.Apps.Elicitation;
     UrlFormat = McpAppElicitationDiagnostics.Url)]
 public static class McpAppElicitation
 {
-    private const string NestedCapabilityName = "elicitation";
+    internal const string NestedCapabilityName = "elicitation";
 
-    /// <summary>The experimental extension identifier.</summary>
+    /// <summary>The legacy preview extension identifier accepted for backward compatibility.</summary>
     public const string ExtensionId = "io.modelcontextprotocol/ui-elicitation";
 
     /// <summary>The metadata member inherited from the MCP Apps extension.</summary>
@@ -39,21 +39,16 @@ public static class McpAppElicitation
                 ? existingApps
                 : null);
         EnsureStringArrayValue(appsCapability, "mimeTypes", McpApps.HtmlMimeType);
+        EnsureObjectValue(appsCapability, NestedCapabilityName);
         capabilities.Extensions[McpApps.ExtensionId] = appsCapability;
-
-        var elicitationCapability = ToCapabilityObject(
-            capabilities.Extensions.TryGetValue(ExtensionId, out var existingElicitation)
-                ? existingElicitation
-                : null);
-        EnsureStringArrayValue(elicitationCapability, "requires", McpApps.ExtensionId);
-        capabilities.Extensions[ExtensionId] = elicitationCapability;
+        capabilities.Extensions.Remove(ExtensionId);
 
         return capabilities;
     }
 
     /// <summary>
-    /// Returns whether the client advertised form elicitation, MCP Apps, and either this prototype extension
-    /// or the nested MCP Apps capability proposed by SEP-3118.
+    /// Returns whether the client advertised form elicitation and the nested MCP Apps capability from SEP-3118,
+    /// or the earlier separately negotiated preview capability.
     /// </summary>
     public static bool IsSupported(ClientCapabilities? capabilities)
     {
@@ -323,6 +318,11 @@ public static class McpAppElicitation
                     JsonSerializer.SerializeToNode(
                         apps,
                         McpAppElicitationJsonContext.Default.McpUiClientCapabilities)!.AsObject(),
+                IReadOnlyDictionary<string, object?> properties =>
+                    (JsonSerializer.SerializeToNode(
+                        properties,
+                        McpJsonUtilities.DefaultOptions.GetTypeInfo(
+                            typeof(IReadOnlyDictionary<string, object?>))) as JsonObject)!,
                 McpAppElicitationCapability elicitation =>
                     JsonSerializer.SerializeToNode(
                         elicitation,
@@ -347,6 +347,14 @@ public static class McpAppElicitation
         if (!ContainsStringValue(values, requiredValue))
         {
             values.Add((JsonNode?)JsonValue.Create(requiredValue));
+        }
+    }
+
+    private static void EnsureObjectValue(JsonObject capability, string propertyName)
+    {
+        if (capability[propertyName] is not JsonObject)
+        {
+            capability[propertyName] = new JsonObject();
         }
     }
 

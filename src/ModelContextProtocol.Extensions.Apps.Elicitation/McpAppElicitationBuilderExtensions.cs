@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace ModelContextProtocol.Extensions.Apps.Elicitation;
@@ -13,7 +14,7 @@ namespace ModelContextProtocol.Extensions.Apps.Elicitation;
     UrlFormat = McpAppElicitationDiagnostics.Url)]
 public static class McpAppElicitationBuilderExtensions
 {
-    /// <summary>Enables the app-elicitation extension and its required MCP Apps extension.</summary>
+    /// <summary>Enables app-rendered elicitation as a capability of the MCP Apps extension.</summary>
     public static IMcpServerBuilder WithMcpAppElicitation(this IMcpServerBuilder builder)
     {
 #if NET
@@ -32,13 +33,33 @@ public static class McpAppElicitationBuilderExtensions
         {
             options.Capabilities ??= new ServerCapabilities();
             options.Capabilities.Extensions ??= new Dictionary<string, object>();
-            if (!options.Capabilities.Extensions.ContainsKey(McpAppElicitation.ExtensionId))
+            var appsCapability = options.Capabilities.Extensions.TryGetValue(McpApps.ExtensionId, out var existing)
+                ? ToCapabilityObject(existing)
+                : new JsonObject();
+            if (appsCapability[McpAppElicitation.NestedCapabilityName] is not JsonObject)
             {
-                options.Capabilities.Extensions[McpAppElicitation.ExtensionId] = new JsonObject
-                {
-                    ["requires"] = new JsonArray(McpApps.ExtensionId),
-                };
+                appsCapability[McpAppElicitation.NestedCapabilityName] = new JsonObject();
             }
+            options.Capabilities.Extensions[McpApps.ExtensionId] = appsCapability;
+            options.Capabilities.Extensions.Remove(McpAppElicitation.ExtensionId);
         }
+
+        private static JsonObject ToCapabilityObject(object? value) => value switch
+        {
+            JsonObject jsonObject => jsonObject,
+            JsonElement { ValueKind: JsonValueKind.Object } element =>
+                JsonNode.Parse(element.GetRawText())!.AsObject(),
+            McpUiClientCapabilities typed =>
+                JsonSerializer.SerializeToNode(
+                    typed,
+                    McpAppElicitationJsonContext.Default.McpUiClientCapabilities)!.AsObject(),
+            IReadOnlyDictionary<string, object?> properties =>
+                (JsonSerializer.SerializeToNode(
+                    properties,
+                    McpJsonUtilities.DefaultOptions.GetTypeInfo(
+                        typeof(IReadOnlyDictionary<string, object?>))) as JsonObject)!,
+            _ => throw new InvalidOperationException(
+                $"The '{McpApps.ExtensionId}' server capability must be a JSON object."),
+        };
     }
 }

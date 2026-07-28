@@ -1,42 +1,17 @@
-# MCP Apps as elicitation UI: prototype extension
+# MCP Apps as elicitation UI
 
 > [!WARNING]
-> This separate-extension design is retained as a public prototype while
-> [SEP-3118](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3118) proposes folding the
-> capability into MCP Apps itself. The unofficial preview package is
+> This is an unofficial reference package for
+> [SEP-3118](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3118). The package is
 > `Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation`.
 
 This prototype composes core form elicitation, MCP Apps, and Multi Round-Trip Requests (MRTR) into one
 interoperable flow. It is informed by ext-apps issue #511, discussion #514, PR #531, and the deferred-tool
 workaround in PR #390.
 
-## Why a separate extension capability?
+## Capability negotiation
 
-An MCP Apps host does not necessarily know how to route an elicitation to an app, manage its input-required
-lifecycle, or fall back safely. Advertising only `io.modelcontextprotocol/ui` would make that support ambiguous.
-This prototype therefore adds a dependent extension:
-
-```json
-{
-  "capabilities": {
-    "elicitation": { "form": {} },
-    "extensions": {
-      "io.modelcontextprotocol/ui": {
-        "mimeTypes": ["text/html;profile=mcp-app"]
-      },
-      "io.modelcontextprotocol/ui-elicitation": {
-        "requires": ["io.modelcontextprotocol/ui"]
-      }
-    }
-  }
-}
-```
-
-The identifier and `requires` member are experimental. They demonstrate dependency and negotiation semantics;
-they do not claim adoption by the MCP project.
-
-This package deliberately advertises that separate extension shape. SEP-3118 instead proposes the
-following nested capability as the eventual MCP Apps contract:
+App-rendered elicitation is an additive capability of the existing MCP Apps extension:
 
 ```json
 {
@@ -52,12 +27,24 @@ following nested capability as the eventual MCP Apps contract:
 }
 ```
 
-`McpAppElicitation.IsSupported(...)` accepts either shape for receive-side interoperability. The
-nested compatibility shape is accepted only when core form elicitation, the MCP App HTML MIME type,
-and an object-valued `elicitation` member are all present. The separate preview shape is accepted
-only when its `requires` array includes `io.modelcontextprotocol/ui`. `AddClientCapabilities(...)`
-continues to emit only the separate `io.modelcontextprotocol/ui-elicitation` contract so this
-preview package's wire identity remains explicit.
+`AddClientCapabilities(...)` emits this shape. `McpAppElicitation.IsSupported(...)` also temporarily
+accepts the earlier 0.2 preview shape, which used a separate
+`io.modelcontextprotocol/ui-elicitation` extension with
+`requires: ["io.modelcontextprotocol/ui"]`. This compatibility is receive-side only; new clients,
+servers, examples, and tests should emit the nested capability. The C# client and server helpers
+remove any preconfigured legacy entry while adding the canonical nested member.
+
+The app and host bridge independently negotiate first-class elicitation support during
+`ui/initialize`:
+
+```json
+{
+  "appCapabilities": { "elicitation": {} },
+  "hostCapabilities": { "elicitation": {} }
+}
+```
+
+Both members must be present before the host forwards `elicitation/create` to the bound app.
 
 ## Elicitation request convention
 
@@ -85,11 +72,11 @@ issue #511:
 }
 ```
 
-A host supporting both extensions reads and renders the resource, then forwards `elicitation/create` to that app
+A capable host reads and renders the resource, then forwards `elicitation/create` to that app
 as JSON-RPC after the normal `ui/initialize` / `ui/notifications/initialized` handshake. The app returns the
 standard `ElicitResult`. This follows the direction explored by PR #531 while making app selection explicit.
 
-A capability-aware server omits `_meta.ui` when the client has form elicitation but lacks either app extension, so
+A capability-aware server omits `_meta.ui` when the client has form elicitation but lacks MCP Apps elicitation, so
 the client renders `requestedSchema` using its native form UI. A server that sends the optional hint unconditionally
 remains compatible with clients that ignore unknown metadata. In both cases, the server receives the same core
 `ElicitResult`.
@@ -118,12 +105,12 @@ performing non-idempotent work before the elicitation has resolved.
 
 ## C# API shape
 
-- `WithMcpAppElicitation()` advertises this extension and the required MCP Apps extension.
-- `AddClientCapabilities(...)` advertises form elicitation plus both extension capabilities.
+- `WithMcpAppElicitation()` advertises the nested MCP Apps elicitation capability.
+- `AddClientCapabilities(...)` advertises form elicitation, the MCP App HTML MIME type, and nested elicitation.
 - `SetAppUi(...)` and `GetAppUi(...)` strongly type the `_meta.ui.resourceUri` convention.
 - `SetAppUiIfSupported(...)` reads the request-scoped 2026-07-28 capabilities (or legacy session capabilities) and
-  leaves the core request unchanged unless form elicitation, MCP Apps, and either the separate preview extension or
-  SEP-3118's nested compatibility capability were advertised.
+  leaves the core request unchanged unless form elicitation, MCP Apps, and either SEP-3118's nested capability or
+  the legacy 0.2 preview capability were advertised.
 - `ResolveOrRequest<T>(...)` emits the first-round MRTR request and deserializes the retried response as `T`.
 
 ## Host requirements and safety
@@ -139,8 +126,7 @@ performing non-idempotent work before the elicitation has resolved.
 ## Remaining spec questions
 
 1. Should forwarding use the standard `elicitation/create` method, as PR #531 does, or a UI-prefixed method?
-2. Should app support be declared in `ui/initialize` as a first-class capability rather than `experimental`?
-3. Should `_meta.ui.resourceUri` alone opt into routing, or must both extension capabilities always be present?
-4. Who performs final schema validation and how are invalid app responses surfaced without losing the elicitation?
-5. What lifecycle notification tells the app and host that the elicitation has completed or been cancelled externally?
-6. How should multiple simultaneous app elicitations from one tool call be ordered and displayed?
+2. Should `_meta.ui.resourceUri` alone opt into routing, or must client-to-server capability negotiation always be present?
+3. Who performs final schema validation and how are invalid app responses surfaced without losing the elicitation?
+4. What lifecycle notification tells the app and host that the elicitation has completed or been cancelled externally?
+5. How should multiple simultaneous app elicitations from one tool call be ordered and displayed?

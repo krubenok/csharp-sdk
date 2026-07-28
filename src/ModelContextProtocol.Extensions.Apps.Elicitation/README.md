@@ -8,21 +8,20 @@
 > [SEP-3118](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3118) is reviewed.
 
 `Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation` provides strongly typed conventions for
-using an MCP App as the renderer for a core form elicitation. This public preview intentionally
-keeps app-rendered elicitation as a separately negotiated extension:
+using an MCP App as the renderer for a core form elicitation. It follows SEP-3118 by composing:
 
 - core form elicitation;
-- `io.modelcontextprotocol/ui` (MCP Apps);
-- `io.modelcontextprotocol/ui-elicitation` (this prototype).
+- `io.modelcontextprotocol/ui` with its MCP App HTML MIME type; and
+- the nested `io.modelcontextprotocol/ui.elicitation` capability.
 
 The elicitation always retains a complete `requestedSchema`. Clients that support form elicitation
-but do not negotiate both app extensions receive the ordinary native form request.
+but do not negotiate MCP Apps elicitation receive the ordinary native form request.
 
 ## Compatibility
 
 | Component | Version |
 | --- | --- |
-| Package | `0.2.0-preview.2` |
+| Package | `0.3.0-preview.1` |
 | C# SDK | `2.0.0-rc.2` |
 | MCP Apps | `io.modelcontextprotocol/ui` |
 | Stateless protocol | `2026-07-28` MRTR |
@@ -41,7 +40,7 @@ dotnet nuget add source "https://nuget.pkg.github.com/krubenok/index.json" \
   --store-password-in-clear-text
 
 dotnet add package Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation \
-  --version 0.2.0-preview.2 \
+  --version 0.3.0-preview.1 \
   --source krubenok-github
 ```
 
@@ -81,16 +80,12 @@ builder.Services
 ```json
 {
   "extensions": {
-    "io.modelcontextprotocol/ui": {},
-    "io.modelcontextprotocol/ui-elicitation": {
-      "requires": ["io.modelcontextprotocol/ui"]
+    "io.modelcontextprotocol/ui": {
+      "elicitation": {}
     }
   }
 }
 ```
-
-The `requires` member is an experimental convention in this package, not part of the accepted MCP
-extension framework.
 
 ## Advertise client support
 
@@ -98,31 +93,8 @@ extension framework.
 var capabilities = McpAppElicitation.AddClientCapabilities(new ClientCapabilities());
 ```
 
-This merges, rather than replaces, existing extension settings and advertises core form elicitation,
-the MCP App HTML MIME type, and this prototype extension:
-
-```json
-{
-  "elicitation": {
-    "form": {}
-  },
-  "extensions": {
-    "io.modelcontextprotocol/ui": {
-      "mimeTypes": ["text/html;profile=mcp-app"]
-    },
-    "io.modelcontextprotocol/ui-elicitation": {
-      "requires": ["io.modelcontextprotocol/ui"]
-    }
-  }
-}
-```
-
-`AddClientCapabilities(...)` intentionally emits the separate
-`io.modelcontextprotocol/ui-elicitation` extension. This pins the wire contract of this package and
-prevents helpers in another SDK from silently replacing it with a different capability shape.
-
-For receive-side interoperability, `IsSupported(...)` also recognizes the canonical shape proposed
-by SEP-3118:
+This merges, rather than replaces, existing extension settings and advertises the canonical
+SEP-3118 capability shape:
 
 ```json
 {
@@ -138,11 +110,28 @@ by SEP-3118:
 }
 ```
 
-This compatibility path does not infer support from MCP Apps alone. Core form support, the MCP App
-HTML MIME type, and an object-valued `elicitation` capability are all still required. For the
-separate preview shape, `requires` must include `io.modelcontextprotocol/ui`. Servers can therefore
-interoperate with SEP-oriented hosts while preview clients continue to advertise the separately
-negotiated package contract.
+## Migrating from 0.2 previews
+
+Version 0.3 emits the nested SEP-3118 capability instead of the separate
+`io.modelcontextprotocol/ui-elicitation` identifier used by 0.2 previews. `IsSupported(...)`
+temporarily accepts both shapes so servers can migrate without application-level compatibility
+code. The legacy shape is recognized only when its `requires` array includes
+`io.modelcontextprotocol/ui`; both shapes still require core form support and the MCP App HTML MIME
+type. `AddClientCapabilities(...)` and `WithMcpAppElicitation()` remove a preconfigured legacy entry
+so upgraded emitters produce only the nested capability. New clients and fixtures should do the
+same.
+
+The app and host also negotiate first-class bridge capabilities during `ui/initialize`:
+
+```json
+{
+  "appCapabilities": { "elicitation": {} },
+  "hostCapabilities": { "elicitation": {} }
+}
+```
+
+Do not place these bridge capabilities under `experimental` or use the legacy separate extension
+identifier.
 
 ## Request app-rendered input
 
