@@ -13,6 +13,10 @@ on:
         type: string
         required: true
         default: preview.1
+      delete_existing_package:
+        description: Delete the existing package instead of publishing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -20,7 +24,7 @@ permissions:
 
 jobs:
   publish:
-    if: ${{ github.repository == 'krubenok/csharp-sdk' }}
+    if: ${{ github.repository == 'krubenok/csharp-sdk' && !inputs.delete_existing_package }}
     runs-on: ubuntu-latest
 
     steps:
@@ -73,3 +77,16 @@ jobs:
           --source github
           --api-key "${{ secrets.GITHUB_TOKEN }}"
           --skip-duplicate
+
+  delete:
+    if: ${{ github.repository == 'krubenok/csharp-sdk' && inputs.delete_existing_package }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete the public package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          gh api
+          --method DELETE
+          "/users/${{ github.repository_owner }}/packages/nuget/Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation"
