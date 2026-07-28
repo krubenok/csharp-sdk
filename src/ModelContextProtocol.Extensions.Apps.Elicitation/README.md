@@ -119,7 +119,8 @@ code. The legacy shape is recognized only when its `requires` array includes
 `io.modelcontextprotocol/ui`; both shapes still require core form support and the MCP App HTML MIME
 type. `AddClientCapabilities(...)` and `WithMcpAppElicitation()` remove a preconfigured legacy entry
 so upgraded emitters produce only the nested capability. New clients and fixtures should do the
-same.
+same. During migration, `IsSupported(...)` also accepts clients that temporarily advertise both
+shapes; this does not change the nested-only canonical emission contract.
 
 The app and host also negotiate first-class bridge capabilities during `ui/initialize`:
 

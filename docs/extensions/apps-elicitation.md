@@ -32,7 +32,9 @@ accepts the earlier 0.2 preview shape, which used a separate
 `io.modelcontextprotocol/ui-elicitation` extension with
 `requires: ["io.modelcontextprotocol/ui"]`. This compatibility is receive-side only; new clients,
 servers, examples, and tests should emit the nested capability. The C# client and server helpers
-remove any preconfigured legacy entry while adding the canonical nested member.
+remove any preconfigured legacy entry while adding the canonical nested member. A client that
+temporarily advertises both shapes is accepted during migration, but dual advertisement is not the
+recommended steady-state contract.
 
 The app and host bridge independently negotiate first-class elicitation support during
 `ui/initialize`:

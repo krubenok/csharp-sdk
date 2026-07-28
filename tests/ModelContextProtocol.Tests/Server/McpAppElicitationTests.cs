@@ -117,6 +117,18 @@ public class McpAppElicitationTests
     }
 
     [Fact]
+    public void IsSupported_AcceptsDualShapeDuringMigration()
+    {
+        var capabilities = CreateLegacyPreviewCapabilities();
+        var apps = Assert.IsType<JsonElement>(capabilities.Extensions![McpApps.ExtensionId]);
+        var appsObject = JsonNode.Parse(apps.GetRawText())!.AsObject();
+        appsObject["elicitation"] = new JsonObject();
+        capabilities.Extensions[McpApps.ExtensionId] = appsObject;
+
+        Assert.True(McpAppElicitation.IsSupported(capabilities));
+    }
+
+    [Fact]
     public void IsSupported_AcceptsCanonicalSepNestedShape()
     {
         var capabilities = CreateCanonicalSepCapabilities();
