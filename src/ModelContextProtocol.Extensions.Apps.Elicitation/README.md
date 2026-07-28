@@ -8,11 +8,12 @@
 > [SEP-3118](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3118) is reviewed.
 
 `Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation` provides strongly typed conventions for
-using an MCP App as the renderer for a core form elicitation. It follows SEP-3118 by composing:
+using an MCP App as the renderer for a core form elicitation. The current experiment composes:
 
 - core form elicitation;
 - `io.modelcontextprotocol/ui` with its MCP App HTML MIME type; and
-- the nested `io.modelcontextprotocol/ui.elicitation` capability.
+- the nested `io.modelcontextprotocol/ui.elicitation` SEP candidate capability; and
+- a temporary `io.modelcontextprotocol/ui-elicitation` opt-in gate.
 
 The elicitation always retains a complete `requestedSchema`. Clients that support form elicitation
 but do not negotiate MCP Apps elicitation receive the ordinary native form request.
@@ -21,7 +22,7 @@ but do not negotiate MCP Apps elicitation receive the ordinary native form reque
 
 | Component | Version |
 | --- | --- |
-| Package | `0.3.0-preview.1` |
+| Package | `0.3.0-preview.2` |
 | C# SDK | `2.0.0-rc.2` |
 | MCP Apps | `io.modelcontextprotocol/ui` |
 | Stateless protocol | `2026-07-28` MRTR |
@@ -40,7 +41,7 @@ dotnet nuget add source "https://nuget.pkg.github.com/krubenok/index.json" \
   --store-password-in-clear-text
 
 dotnet add package Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation \
-  --version 0.3.0-preview.1 \
+  --version 0.3.0-preview.2 \
   --source krubenok-github
 ```
 
@@ -82,6 +83,9 @@ builder.Services
   "extensions": {
     "io.modelcontextprotocol/ui": {
       "elicitation": {}
+    },
+    "io.modelcontextprotocol/ui-elicitation": {
+      "requires": ["io.modelcontextprotocol/ui"]
     }
   }
 }
@@ -93,8 +97,8 @@ builder.Services
 var capabilities = McpAppElicitation.AddClientCapabilities(new ClientCapabilities());
 ```
 
-This merges, rather than replaces, existing extension settings and advertises the canonical
-SEP-3118 capability shape:
+This merges, rather than replaces, existing extension settings and advertises both the SEP candidate
+capability and the temporary experiment gate:
 
 ```json
 {
@@ -105,22 +109,25 @@ SEP-3118 capability shape:
     "io.modelcontextprotocol/ui": {
       "mimeTypes": ["text/html;profile=mcp-app"],
       "elicitation": {}
+    },
+    "io.modelcontextprotocol/ui-elicitation": {
+      "requires": ["io.modelcontextprotocol/ui"]
     }
   }
 }
 ```
 
-## Migrating from 0.2 previews
+## Experimental opt-in gate
 
-Version 0.3 emits the nested SEP-3118 capability instead of the separate
-`io.modelcontextprotocol/ui-elicitation` identifier used by 0.2 previews. `IsSupported(...)`
-temporarily accepts both shapes so servers can migrate without application-level compatibility
-code. The legacy shape is recognized only when its `requires` array includes
-`io.modelcontextprotocol/ui`; both shapes still require core form support and the MCP App HTML MIME
-type. `AddClientCapabilities(...)` and `WithMcpAppElicitation()` remove a preconfigured legacy entry
-so upgraded emitters produce only the nested capability. New clients and fixtures should do the
-same. During migration, `IsSupported(...)` also accepts clients that temporarily advertise both
-shapes; this does not change the nested-only canonical emission contract.
+SEP-3118 proposes the nested `elicitation` member as the future canonical shape, but the SEP is not
+approved. This package therefore requires the separate `io.modelcontextprotocol/ui-elicitation`
+extension as a short-term safety gate before a server adds `_meta.ui.resourceUri`.
+
+The gate and its `requires` member are package-specific experimental conventions; MCP does not
+define extension dependency semantics. `IsSupported(...)` accepts the current dual shape and the
+earlier 0.2 gate-only shape for backward compatibility. It intentionally rejects nested-only clients
+until the SEP is approved or mainlined. At that point, the gate should be removed from emitters and
+negotiation in a documented preview migration.
 
 The app and host also negotiate first-class bridge capabilities during `ui/initialize`:
 
@@ -131,8 +138,8 @@ The app and host also negotiate first-class bridge capabilities during `ui/initi
 }
 ```
 
-Do not place these bridge capabilities under `experimental` or use the legacy separate extension
-identifier.
+Do not place these bridge capabilities under `experimental` or reuse the separate client-to-server
+opt-in gate on the app bridge.
 
 ## Request app-rendered input
 

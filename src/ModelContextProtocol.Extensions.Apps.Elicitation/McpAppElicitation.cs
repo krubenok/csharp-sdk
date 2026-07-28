@@ -15,7 +15,7 @@ public static class McpAppElicitation
 {
     internal const string NestedCapabilityName = "elicitation";
 
-    /// <summary>The legacy preview extension identifier accepted for backward compatibility.</summary>
+    /// <summary>The temporary experimental opt-in gate used while SEP-3118 remains unapproved.</summary>
     public const string ExtensionId = "io.modelcontextprotocol/ui-elicitation";
 
     /// <summary>The metadata member inherited from the MCP Apps extension.</summary>
@@ -41,14 +41,21 @@ public static class McpAppElicitation
         EnsureStringArrayValue(appsCapability, "mimeTypes", McpApps.HtmlMimeType);
         EnsureObjectValue(appsCapability, NestedCapabilityName);
         capabilities.Extensions[McpApps.ExtensionId] = appsCapability;
-        capabilities.Extensions.Remove(ExtensionId);
+
+        var gateCapability = ToCapabilityObject(
+            capabilities.Extensions.TryGetValue(ExtensionId, out var existingGate)
+                ? existingGate
+                : null);
+        EnsureStringArrayValue(gateCapability, "requires", McpApps.ExtensionId);
+        capabilities.Extensions[ExtensionId] = gateCapability;
 
         return capabilities;
     }
 
     /// <summary>
-    /// Returns whether the client advertised form elicitation and the nested MCP Apps capability from SEP-3118,
-    /// or the earlier separately negotiated preview capability.
+    /// Returns whether the client advertised form elicitation, MCP Apps, and the temporary experimental opt-in gate.
+    /// The nested SEP-3118 candidate capability is emitted by current clients, while gate-only 0.2 clients remain
+    /// supported for backward compatibility.
     /// </summary>
     public static bool IsSupported(ClientCapabilities? capabilities)
     {
@@ -58,7 +65,8 @@ public static class McpAppElicitation
         }
         return HasFormElicitationCapability(capabilities.Elicitation) &&
             HasAppsHtmlCapability(capabilities) &&
-            (HasPrototypeCapability(capabilities) || HasNestedAppsCapability(capabilities));
+            HasPrototypeCapability(capabilities) &&
+            HasValidNestedCapabilityOrLegacyGateOnly(capabilities);
     }
 
     /// <summary>Associates an elicitation request with an MCP App UI resource.</summary>
@@ -265,7 +273,7 @@ public static class McpAppElicitation
             _ => false,
         };
 
-    private static bool HasNestedAppsCapability(ClientCapabilities capabilities)
+    private static bool HasValidNestedCapabilityOrLegacyGateOnly(ClientCapabilities capabilities)
     {
         if (capabilities.Extensions?.TryGetValue(McpApps.ExtensionId, out var value) != true)
         {
@@ -274,9 +282,12 @@ public static class McpAppElicitation
 
         return value switch
         {
-            JsonObject jsonObject => IsCapabilityValue(jsonObject[NestedCapabilityName]),
+            McpUiClientCapabilities => true,
+            JsonObject jsonObject =>
+                !jsonObject.TryGetPropertyValue(NestedCapabilityName, out var elicitation) ||
+                IsCapabilityValue(elicitation),
             JsonElement { ValueKind: JsonValueKind.Object } element =>
-                element.TryGetProperty(NestedCapabilityName, out var elicitation) &&
+                !element.TryGetProperty(NestedCapabilityName, out var elicitation) ||
                 elicitation.ValueKind == JsonValueKind.Object,
             _ => false,
         };

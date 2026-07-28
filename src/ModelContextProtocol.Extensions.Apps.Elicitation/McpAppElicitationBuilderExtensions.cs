@@ -41,7 +41,25 @@ public static class McpAppElicitationBuilderExtensions
                 appsCapability[McpAppElicitation.NestedCapabilityName] = new JsonObject();
             }
             options.Capabilities.Extensions[McpApps.ExtensionId] = appsCapability;
-            options.Capabilities.Extensions.Remove(McpAppElicitation.ExtensionId);
+
+            var gateCapability = options.Capabilities.Extensions.TryGetValue(
+                McpAppElicitation.ExtensionId,
+                out var existingGate)
+                ? ToCapabilityObject(existingGate)
+                : new JsonObject();
+            if (gateCapability["requires"] is not JsonArray requires)
+            {
+                requires = new JsonArray();
+                gateCapability["requires"] = requires;
+            }
+            if (!requires.Any(item =>
+                item is JsonValue value &&
+                value.TryGetValue<string>(out var text) &&
+                string.Equals(text, McpApps.ExtensionId, StringComparison.OrdinalIgnoreCase)))
+            {
+                requires.Add((JsonNode?)JsonValue.Create(McpApps.ExtensionId));
+            }
+            options.Capabilities.Extensions[McpAppElicitation.ExtensionId] = gateCapability;
         }
 
         private static JsonObject ToCapabilityObject(object? value) => value switch
@@ -53,6 +71,10 @@ public static class McpAppElicitationBuilderExtensions
                 JsonSerializer.SerializeToNode(
                     typed,
                     McpAppElicitationJsonContext.Default.McpUiClientCapabilities)!.AsObject(),
+            McpAppElicitationCapability typed =>
+                JsonSerializer.SerializeToNode(
+                    typed,
+                    McpAppElicitationJsonContext.Default.McpAppElicitationCapability)!.AsObject(),
             IReadOnlyDictionary<string, object?> properties =>
                 (JsonSerializer.SerializeToNode(
                     properties,

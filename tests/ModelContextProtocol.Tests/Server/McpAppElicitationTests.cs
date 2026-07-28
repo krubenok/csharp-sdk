@@ -18,20 +18,23 @@ namespace ModelContextProtocol.Tests.Server;
 public class McpAppElicitationTests
 {
     [Fact]
-    public void AddClientCapabilities_EmitsCanonicalSepContract()
+    public void AddClientCapabilities_EmitsNestedCandidateAndExperimentalGate()
     {
         var capabilities = McpAppElicitation.AddClientCapabilities(new ClientCapabilities());
         var json = JsonSerializer.SerializeToNode(capabilities, McpJsonUtilities.DefaultOptions)!.AsObject();
         var extensions = json["extensions"]!.AsObject();
         var apps = extensions[McpApps.ExtensionId]!.AsObject();
+        var gate = extensions[McpAppElicitation.ExtensionId]!.AsObject();
 
         Assert.NotNull(capabilities.Elicitation?.Form);
-        Assert.Single(extensions);
+        Assert.Equal(2, extensions.Count);
         Assert.Contains(
             apps["mimeTypes"]!.AsArray(),
             value => value?.GetValue<string>() == McpApps.HtmlMimeType);
         Assert.IsType<JsonObject>(apps["elicitation"]);
-        Assert.False(extensions.ContainsKey(McpAppElicitation.ExtensionId));
+        Assert.Contains(
+            gate["requires"]!.AsArray(),
+            value => value?.GetValue<string>() == McpApps.ExtensionId);
         Assert.True(McpAppElicitation.IsSupported(capabilities));
     }
 
@@ -50,7 +53,7 @@ public class McpAppElicitationTests
                 [McpApps.ExtensionId] = apps,
                 [McpAppElicitation.ExtensionId] = new JsonObject
                 {
-                    ["requires"] = new JsonArray(McpApps.ExtensionId),
+                    ["customSetting"] = true,
                 },
                 ["com.example/other"] = new JsonObject
                 {
@@ -66,7 +69,11 @@ public class McpAppElicitationTests
             apps["mimeTypes"]!.AsArray(),
             value => value?.GetValue<string>() == McpApps.HtmlMimeType);
         Assert.IsType<JsonObject>(apps["elicitation"]);
-        Assert.False(capabilities.Extensions.ContainsKey(McpAppElicitation.ExtensionId));
+        var gate = Assert.IsType<JsonObject>(capabilities.Extensions[McpAppElicitation.ExtensionId]);
+        Assert.True(gate["customSetting"]?.GetValue<bool>());
+        Assert.Contains(
+            gate["requires"]!.AsArray(),
+            value => value?.GetValue<string>() == McpApps.ExtensionId);
         Assert.True(
             Assert.IsType<JsonObject>(capabilities.Extensions["com.example/other"])["customSetting"]?.GetValue<bool>());
     }
@@ -117,7 +124,7 @@ public class McpAppElicitationTests
     }
 
     [Fact]
-    public void IsSupported_AcceptsDualShapeDuringMigration()
+    public void IsSupported_AcceptsCurrentDualShape()
     {
         var capabilities = CreateLegacyPreviewCapabilities();
         var apps = Assert.IsType<JsonElement>(capabilities.Extensions![McpApps.ExtensionId]);
@@ -129,28 +136,26 @@ public class McpAppElicitationTests
     }
 
     [Fact]
-    public void IsSupported_AcceptsCanonicalSepNestedShape()
+    public void IsSupported_NestedCandidateWithoutExperimentalGateIsNotSupported()
     {
         var capabilities = CreateCanonicalSepCapabilities();
 
-        Assert.True(McpAppElicitation.IsSupported(capabilities));
+        Assert.False(McpAppElicitation.IsSupported(capabilities));
         Assert.False(capabilities.Extensions?.ContainsKey(McpAppElicitation.ExtensionId));
     }
 
     [Fact]
     public void IsSupported_CanonicalNestedCapabilityMustBeAnObject()
     {
-        var capabilities = CreateCanonicalSepCapabilities();
-        var apps = Assert.IsType<JsonElement>(capabilities.Extensions![McpApps.ExtensionId]);
-        var appsObject = JsonNode.Parse(apps.GetRawText())!.AsObject();
+        var capabilities = McpAppElicitation.AddClientCapabilities(new ClientCapabilities());
+        var appsObject = Assert.IsType<JsonObject>(capabilities.Extensions![McpApps.ExtensionId]);
         appsObject["elicitation"] = true;
-        capabilities.Extensions[McpApps.ExtensionId] = appsObject;
 
         Assert.False(McpAppElicitation.IsSupported(capabilities));
     }
 
     [Fact]
-    public void WithMcpAppElicitation_AdvertisesCanonicalNestedAppsCapability()
+    public void WithMcpAppElicitation_AdvertisesNestedCandidateAndExperimentalGate()
     {
         var services = new ServiceCollection();
         services.AddMcpServer(options =>
@@ -170,10 +175,13 @@ public class McpAppElicitationTests
         using var provider = services.BuildServiceProvider();
         var capabilities = provider.GetRequiredService<IOptions<McpServerOptions>>().Value.Capabilities;
 
-        Assert.Single(capabilities!.Extensions!);
+        Assert.Equal(2, capabilities!.Extensions!.Count);
         var apps = Assert.IsType<JsonObject>(capabilities?.Extensions?[McpApps.ExtensionId]);
         Assert.IsType<JsonObject>(apps["elicitation"]);
-        Assert.False(capabilities?.Extensions?.ContainsKey(McpAppElicitation.ExtensionId));
+        var gate = Assert.IsType<JsonObject>(capabilities?.Extensions?[McpAppElicitation.ExtensionId]);
+        Assert.Contains(
+            gate["requires"]!.AsArray(),
+            value => value?.GetValue<string>() == McpApps.ExtensionId);
     }
 
     [Fact]
@@ -311,7 +319,7 @@ public class McpAppElicitationTests
     }
 
     [Fact]
-    public void SetAppUiIfSupported_RequestScopedCanonicalCapabilitiesAddResourceUri()
+    public void SetAppUiIfSupported_RequestScopedNestedCapabilitiesWithoutGateLeaveRequestUnchanged()
     {
         var server = new Mock<McpServer>();
         var context = new RequestContext<CallToolRequestParams>(
@@ -333,7 +341,7 @@ public class McpAppElicitationTests
             context,
             "ui://portfolio/assign-manager");
 
-        Assert.Equal("ui://portfolio/assign-manager", McpAppElicitation.GetAppUi(request)?.ResourceUri);
+        Assert.Null(McpAppElicitation.GetAppUi(request));
     }
 
     [Fact]
@@ -577,7 +585,7 @@ public sealed class McpAppElicitationCompatibilityTests : ClientServerTestBase
     }
 
     [Fact]
-    public async Task CanonicalSepClient_ReceivesResourceHintAndCompletesMrtrRetry()
+    public async Task NestedOnlySepClient_UsesNativeFormAndCompletesMrtrRetry()
     {
         ElicitRequestParams? observedRequest = null;
         var options = CreateClientOptions(JsonSerializer.Deserialize<ClientCapabilities>(
@@ -607,10 +615,8 @@ public sealed class McpAppElicitationCompatibilityTests : ClientServerTestBase
             cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.NotNull(observedRequest);
-        Assert.Equal(
-            "ui://portfolio/assign-manager",
-            McpAppElicitation.GetAppUi(observedRequest)?.ResourceUri);
-        Assert.Equal("app:mgr-priya", GetText(result));
+        Assert.Null(McpAppElicitation.GetAppUi(observedRequest));
+        Assert.Equal("native:mgr-priya", GetText(result));
     }
 
     private static string CompleteAssignment(

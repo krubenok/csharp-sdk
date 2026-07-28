@@ -11,7 +11,9 @@ workaround in PR #390.
 
 ## Capability negotiation
 
-App-rendered elicitation is an additive capability of the existing MCP Apps extension:
+SEP-3118 proposes app-rendered elicitation as an additive capability of the existing MCP Apps
+extension. While the SEP remains unapproved, this package also uses a separate experimental opt-in
+gate:
 
 ```json
 {
@@ -21,20 +23,23 @@ App-rendered elicitation is an additive capability of the existing MCP Apps exte
       "io.modelcontextprotocol/ui": {
         "mimeTypes": ["text/html;profile=mcp-app"],
         "elicitation": {}
+      },
+      "io.modelcontextprotocol/ui-elicitation": {
+        "requires": ["io.modelcontextprotocol/ui"]
       }
     }
   }
 }
 ```
 
-`AddClientCapabilities(...)` emits this shape. `McpAppElicitation.IsSupported(...)` also temporarily
-accepts the earlier 0.2 preview shape, which used a separate
-`io.modelcontextprotocol/ui-elicitation` extension with
-`requires: ["io.modelcontextprotocol/ui"]`. This compatibility is receive-side only; new clients,
-servers, examples, and tests should emit the nested capability. The C# client and server helpers
-remove any preconfigured legacy entry while adding the canonical nested member. A client that
-temporarily advertises both shapes is accepted during migration, but dual advertisement is not the
-recommended steady-state contract.
+`AddClientCapabilities(...)` and `WithMcpAppElicitation()` emit both entries. The separate extension
+and its `requires` member are non-normative package conventions; the MCP extension framework does
+not define dependency semantics.
+
+`McpAppElicitation.IsSupported(...)` requires the gate before adding the app-rendering hint. It
+accepts the current dual shape and the earlier 0.2 gate-only shape, but rejects nested-only clients
+until SEP-3118 is approved or mainlined. Gate removal must therefore be an explicit future preview
+migration rather than an application-level workaround.
 
 The app and host bridge independently negotiate first-class elicitation support during
 `ui/initialize`:
@@ -107,12 +112,12 @@ performing non-idempotent work before the elicitation has resolved.
 
 ## C# API shape
 
-- `WithMcpAppElicitation()` advertises the nested MCP Apps elicitation capability.
-- `AddClientCapabilities(...)` advertises form elicitation, the MCP App HTML MIME type, and nested elicitation.
+- `WithMcpAppElicitation()` advertises the nested MCP Apps candidate capability and temporary gate.
+- `AddClientCapabilities(...)` advertises form elicitation, the MCP App HTML MIME type, nested elicitation, and the gate.
 - `SetAppUi(...)` and `GetAppUi(...)` strongly type the `_meta.ui.resourceUri` convention.
 - `SetAppUiIfSupported(...)` reads the request-scoped 2026-07-28 capabilities (or legacy session capabilities) and
-  leaves the core request unchanged unless form elicitation, MCP Apps, and either SEP-3118's nested capability or
-  the legacy 0.2 preview capability were advertised.
+  leaves the core request unchanged unless form elicitation, MCP Apps, and the temporary gate were advertised.
+  The nested member must be object-valued when present; its absence is accepted only for 0.2 compatibility.
 - `ResolveOrRequest<T>(...)` emits the first-round MRTR request and deserializes the retried response as `T`.
 
 ## Host requirements and safety

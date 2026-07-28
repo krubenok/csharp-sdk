@@ -3,13 +3,13 @@ using System.Text.Json.Serialization;
 
 namespace ModelContextProtocol.Extensions.Apps.Elicitation;
 
-/// <summary>Describes the legacy separately negotiated preview capability for MCP Apps elicitation.</summary>
+/// <summary>Describes the temporary experimental opt-in gate for MCP Apps elicitation.</summary>
 [Experimental(
     McpAppElicitationDiagnostics.DiagnosticId,
     UrlFormat = McpAppElicitationDiagnostics.Url)]
 public sealed class McpAppElicitationCapability
 {
-    /// <summary>Gets the extensions required by the legacy preview capability.</summary>
+    /// <summary>Gets the extensions required by the experimental gate.</summary>
     [JsonPropertyName("requires")]
     public IList<string> Requires { get; set; } = [McpApps.ExtensionId];
 }
