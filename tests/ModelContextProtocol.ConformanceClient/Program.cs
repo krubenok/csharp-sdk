@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text.Json;
 using System.Web;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Authentication;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
@@ -92,7 +93,7 @@ var oauthOptions = new ModelContextProtocol.Authentication.ClientOAuthOptions
     RedirectUri = clientRedirectUri,
     // Configure the metadata document URI for CIMD.
     ClientMetadataDocumentUri = new Uri("https://conformance-test.local/client-metadata.json"),
-    AuthorizationRedirectDelegate = (authUrl, redirectUri, ct) => HandleAuthorizationUrlAsync(authUrl, redirectUri, ct),
+    AuthorizationCallbackHandler = HandleAuthorizationUrlAsync,
 };
 
 if (preRegisteredClientId is not null)
@@ -320,6 +321,27 @@ try
             }
             break;
         }
+        case "json-schema-ref-no-deref":
+        {
+            // SEP-2106: listing tools must not dereference network $refs in a tool's
+            // inputSchema — the scenario's canary endpoint observes any such fetch.
+            await mcpClient.ListToolsAsync();
+            break;
+        }
+        case "sep-2322-client-request-state":
+        {
+            // SEP-2322 (MRTR): drive the client's input-required auto-loop. The mock
+            // inspects the raw tools/call params: requestState echoed byte-exact (and
+            // omitted when the server sent none), a fresh JSON-RPC id per retry, no
+            // MRTR params bleeding into the unrelated call, and a missing resultType
+            // parsing as a terminal (complete) result.
+            await mcpClient.ListToolsAsync();
+            await mcpClient.CallToolAsync(toolName: "test_mrtr_echo_state", arguments: new Dictionary<string, object?>());
+            await mcpClient.CallToolAsync(toolName: "test_mrtr_unrelated", arguments: new Dictionary<string, object?>());
+            await mcpClient.CallToolAsync(toolName: "test_mrtr_no_state", arguments: new Dictionary<string, object?>());
+            await mcpClient.CallToolAsync(toolName: "test_mrtr_no_result_type", arguments: new Dictionary<string, object?>());
+            break;
+        }
         default:
             // No extra processing for other scenarios
             break;
@@ -340,8 +362,12 @@ catch (Exception ex)
 // Copied from ProtectedMcpClient sample
 // Simulate a user opening the browser and logging in
 // Copied from OAuthTestBase
-static async Task<string?> HandleAuthorizationUrlAsync(Uri authorizationUrl, Uri redirectUri, CancellationToken cancellationToken)
+static async Task<AuthorizationResult?> HandleAuthorizationUrlAsync(
+    AuthorizationCallbackContext authorizationContext,
+    CancellationToken cancellationToken)
 {
+    var authorizationUrl = authorizationContext.AuthorizationUri;
+
     Console.WriteLine("Starting OAuth authorization flow...");
     Console.WriteLine($"Simulating opening browser to: {authorizationUrl}");
 
@@ -355,15 +381,34 @@ static async Task<string?> HandleAuthorizationUrlAsync(Uri authorizationUrl, Uri
 
     if (location is not null && !string.IsNullOrEmpty(location.Query))
     {
-        // Parse query string to extract "code" parameter
+        // Parse query string to extract "code", "state", and "iss" parameters
         var query = location.Query.TrimStart('?');
+        string? code = null;
+        string? state = null;
+        string? iss = null;
         foreach (var pair in query.Split('&'))
         {
             var parts = pair.Split('=', 2);
-            if (parts.Length == 2 && parts[0] == "code")
+            if (parts.Length == 2)
             {
-                return HttpUtility.UrlDecode(parts[1]);
+                if (parts[0] == "code")
+                {
+                    code = HttpUtility.UrlDecode(parts[1]);
+                }
+                else if (parts[0] == "state")
+                {
+                    state = HttpUtility.UrlDecode(parts[1]);
+                }
+                else if (parts[0] == "iss")
+                {
+                    iss = HttpUtility.UrlDecode(parts[1]);
+                }
             }
+        }
+
+        if (code is not null)
+        {
+            return new AuthorizationResult { Code = code, State = state, Iss = iss };
         }
     }
 
