@@ -30,7 +30,9 @@ but do not negotiate both app extensions receive the ordinary native form reques
 ## Install from GitHub Packages
 
 Authenticate to Kyle Rubenok's GitHub Packages feed with a classic personal access token that has
-`read:packages`. Do not commit the token.
+`read:packages`. Your GitHub account must also have access to the private
+[`krubenok/mcp-app-elicitation-packages`](https://github.com/krubenok/mcp-app-elicitation-packages)
+repository. Do not commit the token.
 
 ```shell
 dotnet nuget add source "https://nuget.pkg.github.com/krubenok/index.json" \

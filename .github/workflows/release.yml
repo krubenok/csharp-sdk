@@ -35,10 +35,6 @@ on:
       version_suffix_override:
         description: Version suffix override
         type: string
-      apps_elicitation_only:
-        description: Publish only the unofficial MCP Apps elicitation preview package
-        type: boolean
-        default: false
 
   release:
     types: [published]
@@ -46,7 +42,7 @@ on:
 jobs:
   build-all-configs:
     # Don't run scheduled/release triggers on forks; allow manual workflow_dispatch
-    if: ${{ !inputs.apps_elicitation_only && (github.repository == 'modelcontextprotocol/csharp-sdk' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ github.repository == 'modelcontextprotocol/csharp-sdk' || github.event_name == 'workflow_dispatch' }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
@@ -189,62 +185,3 @@ jobs:
             --source https://api.nuget.org/v3/index.json
             --api-key ${{ secrets.NUGET_KEY_MODELCONTEXTPROTOCOL }}
             --skip-duplicate
-
-  publish-apps-elicitation-preview:
-    if: ${{ github.repository == 'krubenok/csharp-sdk' && github.event_name == 'workflow_dispatch' && inputs.apps_elicitation_only }}
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      packages: write
-
-    env:
-      VERSION_SUFFIX: ${{ inputs.version_suffix_override || 'preview.1' }}
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
-        with:
-          dotnet-version: |
-            10.0.x
-            9.0.x
-
-      - name: Test the extension
-        run: >-
-          dotnet test
-          tests/ModelContextProtocol.Tests/ModelContextProtocol.Tests.csproj
-          --framework net10.0
-          --filter FullyQualifiedName~McpAppElicitation
-
-      - name: Pack the extension
-        run: >-
-          dotnet pack
-          src/ModelContextProtocol.Extensions.Apps.Elicitation/ModelContextProtocol.Extensions.Apps.Elicitation.csproj
-          --configuration Release
-          --version-suffix "${VERSION_SUFFIX}"
-          --output "${{ github.workspace }}/artifacts/packages"
-
-      - name: Upload package artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: apps-elicitation-preview
-          path: ${{ github.workspace }}/artifacts/packages
-
-      - name: Authenticate to GitHub Packages
-        run: >-
-          dotnet nuget add source
-          "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
-          --name github
-          --username "${{ github.actor }}"
-          --password "${{ secrets.GITHUB_TOKEN }}"
-          --store-password-in-clear-text
-
-      - name: Publish the extension to GitHub Packages
-        run: >-
-          dotnet nuget push
-          "${{ github.workspace }}/artifacts/packages/Krubenok.ModelContextProtocol.Extensions.Apps.Elicitation.0.1.0-${VERSION_SUFFIX}.nupkg"
-          --source github
-          --api-key "${{ secrets.GITHUB_TOKEN }}"
-          --skip-duplicate
