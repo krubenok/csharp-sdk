@@ -39,7 +39,7 @@ Register the tool type when building the server:
 
 ```csharp
 builder.Services.AddMcpServer()
-    .WithHttpTransport(o => o.Stateless = true)
+    .WithHttpTransport(o => o.SessionMode = HttpServerSessionMode.Stateless)
     .WithTools<MyTools>();
 ```
 
@@ -121,6 +121,8 @@ public static EmbeddedResourceBlock GetBinaryData(string id)
 }
 ```
 
+The SDK sends binary embedded resources using the MCP resource shape: a URI, MIME type, and base64-encoded `blob`. It does not convert formats such as `application/pdf` into images. How an embedded resource is rendered or made available to a model depends on the client. When targeting clients that do not support a binary format, consider also returning a text representation or another client-supported content block.
+
 #### Mixed content
 
 Tools can return multiple content blocks by returning `IEnumerable<ContentBlock>`:
@@ -138,6 +140,16 @@ public static IEnumerable<ContentBlock> DescribeImage()
     ];
 }
 ```
+
+#### Structured content
+
+Set `UseStructuredContent = true` on <xref:ModelContextProtocol.Server.McpServerToolAttribute> or
+<xref:ModelContextProtocol.Server.McpServerToolCreateOptions> to advertise an output schema and
+serialize the return value into <xref:ModelContextProtocol.Protocol.CallToolResult.StructuredContent>.
+The output schema may be any JSON Schema 2020-12 document. Non-object return values are represented
+directly, so a tool returning `72` produces `structuredContent: 72`, not
+`structuredContent: { "result": 72 }`. Clients should read the value according to the advertised
+output schema rather than assuming a `result` wrapper.
 
 #### Content annotations
 

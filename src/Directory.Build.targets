@@ -1,8 +1,11 @@
 <Project>
+  <Import Project="..\Directory.Build.targets" />
+
   <Target Name="PinMcpProjectReferencePackageVersions"
           AfterTargets="_GetProjectReferenceVersions"
           Condition="'$(MSBuildProjectName)' == 'ModelContextProtocol'
                   Or '$(MSBuildProjectName)' == 'ModelContextProtocol.AspNetCore'
+                  Or '$(MSBuildProjectName)' == 'ModelContextProtocol.Extensions.Skills'
                   Or '$(MSBuildProjectName)' == 'ModelContextProtocol.Extensions.Tasks'">
     <ItemGroup>
       <_ProjectReferencesWithVersions Update="@(_ProjectReferencesWithVersions)">

@@ -2,6 +2,7 @@ using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Tests.Utils;
 using Microsoft.Extensions.Logging;
+using System.IO.Pipelines;
 using System.Net;
 
 namespace ModelContextProtocol.Tests.Transport;
@@ -52,7 +53,7 @@ public class HttpClientTransportAutoDetectTests(ITestOutputHelper testOutputHelp
     [Fact]
     public async Task AutoDetectMode_WhenBothTransportsFail_PreservesStreamableHttpException()
     {
-        // Regression test: when Streamable HTTP POST fails (e.g. 403) and the SSE GET
+        // Regression test: when Streamable HTTP POST fails (e.g. 404) and the SSE GET
         // fallback also fails (e.g. 405), the original Streamable HTTP error should
         // be preserved. The SSE connection failure is available as its inner exception.
         var options = new HttpClientTransportOptions
@@ -70,11 +71,11 @@ public class HttpClientTransportAutoDetectTests(ITestOutputHelper testOutputHelp
         {
             if (request.Method == HttpMethod.Post)
             {
-                // Streamable HTTP POST fails with 403 (auth error)
+                // Streamable HTTP POST fails with 404 (an SSE-only server with no POST endpoint).
                 return Task.FromResult(new HttpResponseMessage
                 {
-                    StatusCode = HttpStatusCode.Forbidden,
-                    Content = new StringContent("Forbidden")
+                    StatusCode = HttpStatusCode.NotFound,
+                    Content = new StringContent("Streamable HTTP not supported")
                 });
             }
 
@@ -98,9 +99,13 @@ public class HttpClientTransportAutoDetectTests(ITestOutputHelper testOutputHelp
         var ex = await Assert.ThrowsAsync<HttpRequestException>(
             () => McpClient.CreateAsync(transport, cancellationToken: TestContext.Current.CancellationToken));
 
-        Assert.Contains("403", ex.Message);
+        Assert.Contains("404", ex.Message);
         Assert.IsType<HttpRequestException>(ex.InnerException);
         Assert.Contains("405", ex.InnerException.Message);
+        Assert.Equal(HttpStatusCode.NotFound, ex.Data["ModelContextProtocol.HttpStatusCode"]);
+#if NET
+        Assert.Equal(HttpStatusCode.NotFound, ex.StatusCode);
+#endif
     }
 
     [Fact]
@@ -163,12 +168,122 @@ public class HttpClientTransportAutoDetectTests(ITestOutputHelper testOutputHelp
         Assert.NotNull(session);
     }
 
-    // Regression test for https://github.com/modelcontextprotocol/csharp-sdk/issues/1526
-    // When Streamable HTTP returns 415 (e.g. wrong Content-Type) and the SSE fallback also fails
-    // (e.g. a Streamable-HTTP-only server returns 405 to the GET), the surfaced exception must
-    // preserve the original Streamable HTTP error rather than dropping it on the floor.
     [Fact]
-    public async Task AutoDetectMode_PreservesOriginalError_WhenStreamableHttpReturns415AndSseFallbackFails()
+    public async Task AutoDetectMode_WhenProvisionalSseFails_LeavesSharedMessageChannelOpen()
+    {
+        var options = new HttpClientTransportOptions
+        {
+            Endpoint = new Uri("http://localhost"),
+            TransportMode = HttpTransportMode.AutoDetect,
+            Name = "AutoDetect shared channel test client"
+        };
+
+        using var mockHttpHandler = new MockHttpHandler();
+        using var httpClient = new HttpClient(mockHttpHandler);
+        await using var transport = new HttpClientTransport(options, httpClient, LoggerFactory);
+        var streamableHttpPostCount = 0;
+
+        mockHttpHandler.RequestHandler = request =>
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.MethodNotAllowed));
+            }
+
+            if (request.Method == HttpMethod.Post && ++streamableHttpPostCount == 1)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("Invalid session ID"),
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"serverInfo\":{\"name\":\"test\",\"version\":\"1.0\"}}}",
+                    System.Text.Encoding.UTF8,
+                    "application/json"),
+            });
+        };
+
+        await using var session = await transport.ConnectAsync(TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            session.SendMessageAsync(
+                new JsonRpcRequest { Method = RequestMethods.ServerDiscover, Id = new RequestId(1) },
+                TestContext.Current.CancellationToken));
+
+        await session.SendMessageAsync(
+            new JsonRpcRequest { Method = RequestMethods.Initialize, Id = new RequestId(2) },
+            TestContext.Current.CancellationToken);
+
+        var response = await session.MessageReader.ReadAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(new RequestId(2), Assert.IsType<JsonRpcResponse>(response).Id);
+    }
+
+    [Fact]
+    public async Task AutoDetectMode_WhenAdoptedSseDisconnects_CompletesSharedMessageChannel()
+    {
+        var options = new HttpClientTransportOptions
+        {
+            Endpoint = new Uri("http://localhost"),
+            TransportMode = HttpTransportMode.AutoDetect,
+            Name = "AutoDetect adopted SSE test client"
+        };
+
+        using var mockHttpHandler = new MockHttpHandler();
+        using var httpClient = new HttpClient(mockHttpHandler);
+        await using var transport = new HttpClientTransport(options, httpClient, LoggerFactory);
+        var ssePipe = new Pipe();
+        var postCount = 0;
+
+        await ssePipe.Writer.WriteAsync(
+            System.Text.Encoding.UTF8.GetBytes("event: endpoint\r\ndata: /sse-endpoint\r\n\r\n"),
+            TestContext.Current.CancellationToken);
+
+        mockHttpHandler.RequestHandler = request =>
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                var content = new StreamContent(ssePipe.Reader.AsStream());
+                content.Headers.ContentType = new("text/event-stream");
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+            }
+
+            if (request.Method == HttpMethod.Post && ++postCount == 1)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("Streamable HTTP not supported"),
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        };
+
+        await using var session = await transport.ConnectAsync(TestContext.Current.CancellationToken);
+
+        await session.SendMessageAsync(
+            new JsonRpcRequest { Method = RequestMethods.Initialize, Id = new RequestId(1) },
+            TestContext.Current.CancellationToken);
+
+        await ssePipe.Writer.CompleteAsync();
+
+        var exception = await Assert.ThrowsAsync<ClientTransportClosedException>(
+            async () => await session.MessageReader.Completion.WaitAsync(
+                TestConstants.DefaultTimeout,
+                TestContext.Current.CancellationToken));
+        Assert.IsType<HttpClientCompletionDetails>(exception.Details);
+    }
+
+    // Regression test for https://github.com/modelcontextprotocol/csharp-sdk/issues/1526
+    // When Streamable HTTP returns 404 (e.g. an SSE-only server with no POST endpoint) and the
+    // SSE fallback also fails (e.g. a Streamable-HTTP-only server returns 405 to the GET), the
+    // surfaced exception must preserve the original Streamable HTTP error rather than dropping
+    // it on the floor.
+    [Fact]
+    public async Task AutoDetectMode_PreservesOriginalError_WhenStreamableHttpReturns404AndSseFallbackFails()
     {
         var options = new HttpClientTransportOptions
         {
@@ -181,16 +296,16 @@ public class HttpClientTransportAutoDetectTests(ITestOutputHelper testOutputHelp
         using var httpClient = new HttpClient(mockHttpHandler);
         await using var transport = new HttpClientTransport(options, httpClient, LoggerFactory);
 
-        const string streamableHttpBody = "Content-Type must be 'application/json'";
+        const string streamableHttpBody = "Streamable HTTP not supported";
 
         mockHttpHandler.RequestHandler = (request) =>
         {
             if (request.Method == HttpMethod.Post)
             {
-                // Streamable HTTP fails with 415 - this is the real server diagnostic the user needs to see.
+                // Streamable HTTP fails with 404 - this is the real server diagnostic the user needs to see.
                 return Task.FromResult(new HttpResponseMessage
                 {
-                    StatusCode = HttpStatusCode.UnsupportedMediaType,
+                    StatusCode = HttpStatusCode.NotFound,
                     Content = new StringContent(streamableHttpBody),
                 });
             }
@@ -198,7 +313,7 @@ public class HttpClientTransportAutoDetectTests(ITestOutputHelper testOutputHelp
             if (request.Method == HttpMethod.Get)
             {
                 // Streamable-HTTP-only server: SSE GET is rejected with 405. Without the fix this is the
-                // ONLY error the user ever sees, masking the real 415 diagnostic above.
+                // ONLY error the user ever sees, masking the real 404 diagnostic above.
                 return Task.FromResult(new HttpResponseMessage
                 {
                     StatusCode = HttpStatusCode.MethodNotAllowed,
@@ -217,11 +332,11 @@ public class HttpClientTransportAutoDetectTests(ITestOutputHelper testOutputHelp
                 new JsonRpcRequest { Method = RequestMethods.Initialize, Id = new RequestId(1) },
                 TestContext.Current.CancellationToken));
 
-        // Walk the exception chain and assert the original 415 (and its body) is somewhere in it.
+        // Walk the exception chain and assert the original 404 (and its body) is somewhere in it.
         // We don't pin the exact exception type so this stays robust to future error-shape tweaks,
         // but the underlying status code and server body must reach the caller.
         var combined = Flatten(ex);
-        Assert.Contains("415", combined);
+        Assert.Contains("404", combined);
         Assert.Contains(streamableHttpBody, combined);
 
         static string Flatten(Exception e)
@@ -264,7 +379,7 @@ public class HttpClientTransportAutoDetectTests(ITestOutputHelper testOutputHelp
         using var httpClient = new HttpClient(mockHttpHandler);
         await using var transport = new HttpClientTransport(options, httpClient, LoggerFactory);
 
-        const string streamableHttpBody = "Content-Type must be 'application/json'";
+        const string streamableHttpBody = "Streamable HTTP not supported";
 
         mockHttpHandler.RequestHandler = (request) =>
         {
@@ -272,7 +387,7 @@ public class HttpClientTransportAutoDetectTests(ITestOutputHelper testOutputHelp
             {
                 return Task.FromResult(new HttpResponseMessage
                 {
-                    StatusCode = HttpStatusCode.UnsupportedMediaType,
+                    StatusCode = HttpStatusCode.NotFound,
                     Content = new StringContent(streamableHttpBody),
                 });
             }
@@ -298,10 +413,11 @@ public class HttpClientTransportAutoDetectTests(ITestOutputHelper testOutputHelp
 
         // The surfaced exception is the original Streamable HTTP error (the real server diagnostic), not the SSE 405.
         var httpEx = Assert.IsType<HttpRequestException>(ex);
-        Assert.Contains("415", httpEx.Message);
+        Assert.Contains("404", httpEx.Message);
         Assert.Contains(streamableHttpBody, httpEx.Message);
+        Assert.Equal(HttpStatusCode.NotFound, httpEx.Data["ModelContextProtocol.HttpStatusCode"]);
 #if NET
-        Assert.Equal(HttpStatusCode.UnsupportedMediaType, httpEx.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, httpEx.StatusCode);
 #endif
 
         // The SSE fallback failure (the 405 from the GET) is preserved as the inner exception, not dropped.
@@ -367,8 +483,8 @@ public class HttpClientTransportAutoDetectTests(ITestOutputHelper testOutputHelp
             {
                 return Task.FromResult(new HttpResponseMessage
                 {
-                    StatusCode = HttpStatusCode.UnsupportedMediaType,
-                    Content = new StringContent("Content-Type must be 'application/json'"),
+                    StatusCode = HttpStatusCode.NotFound,
+                    Content = new StringContent("Streamable HTTP not supported"),
                 });
             }
 
@@ -389,5 +505,160 @@ public class HttpClientTransportAutoDetectTests(ITestOutputHelper testOutputHelp
         Assert.Contains(
             MockLoggerProvider.LogMessages,
             m => m.LogLevel == LogLevel.Warning && m.Message.Contains("SSE fallback failed"));
+    }
+
+    // A 400/404 on the SEP-2575 server/discover probe is protocol negotiation, not transport detection:
+    // a pre-SEP-2575 server rejects the session-less POST whether it speaks Streamable HTTP or SSE, and
+    // McpClientImpl.ConnectAsync reads exactly those two statuses as "initialize-handshake server" and
+    // retries with initialize. The SSE GET can therefore only waste a round trip here.
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.BadRequest)]
+    public async Task AutoDetectMode_SkipsSseFallback_WhenDiscoverProbeIsRejected(HttpStatusCode statusCode)
+    {
+        var options = new HttpClientTransportOptions
+        {
+            Endpoint = new Uri("http://localhost"),
+            TransportMode = HttpTransportMode.AutoDetect,
+            Name = "AutoDetect discover probe test client"
+        };
+
+        using var mockHttpHandler = new MockHttpHandler();
+        using var httpClient = new HttpClient(mockHttpHandler);
+        await using var transport = new HttpClientTransport(options, httpClient, LoggerFactory);
+        var getCount = 0;
+
+        mockHttpHandler.RequestHandler = request =>
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                getCount++;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.MethodNotAllowed));
+            }
+
+            return Task.FromResult(new HttpResponseMessage(statusCode)
+            {
+                Content = new StringContent("Not Found"),
+            });
+        };
+
+        await using var session = await transport.ConnectAsync(TestContext.Current.CancellationToken);
+
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            session.SendMessageAsync(
+                new JsonRpcRequest { Method = RequestMethods.ServerDiscover, Id = new RequestId(1) },
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, getCount);
+        Assert.Equal(statusCode, ex.Data["ModelContextProtocol.HttpStatusCode"]);
+        Assert.DoesNotContain(
+            MockLoggerProvider.LogMessages,
+            m => m.Message.Contains("falling back to SSE transport"));
+    }
+
+    // Skipping the SSE attempt on the discover probe must not strand an SSE-only server: the initialize
+    // retry that McpClientImpl.ConnectAsync issues next goes through this same transport and still falls
+    // back to SSE, so such a server is reached one POST later rather than not at all.
+    [Fact]
+    public async Task AutoDetectMode_StillFallsBackToSse_WhenInitializeFollowsRejectedDiscoverProbe()
+    {
+        var options = new HttpClientTransportOptions
+        {
+            Endpoint = new Uri("http://localhost"),
+            TransportMode = HttpTransportMode.AutoDetect,
+            Name = "AutoDetect discover probe then initialize test client"
+        };
+
+        using var mockHttpHandler = new MockHttpHandler();
+        using var httpClient = new HttpClient(mockHttpHandler);
+        await using var transport = new HttpClientTransport(options, httpClient, LoggerFactory);
+        var ssePipe = new Pipe();
+        var sseEndpointPostCount = 0;
+
+        await ssePipe.Writer.WriteAsync(
+            System.Text.Encoding.UTF8.GetBytes("event: endpoint\r\ndata: /sse-endpoint\r\n\r\n"),
+            TestContext.Current.CancellationToken);
+        await ssePipe.Writer.FlushAsync(TestContext.Current.CancellationToken);
+
+        mockHttpHandler.RequestHandler = request =>
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                var content = new StreamContent(ssePipe.Reader.AsStream());
+                content.Headers.ContentType = new("text/event-stream");
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+            }
+
+            if (request.RequestUri?.AbsolutePath == "/sse-endpoint")
+            {
+                sseEndpointPostCount++;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Accepted));
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("Mcp-Session-Id required"),
+            });
+        };
+
+        await using var session = await transport.ConnectAsync(TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            session.SendMessageAsync(
+                new JsonRpcRequest { Method = RequestMethods.ServerDiscover, Id = new RequestId(1) },
+                TestContext.Current.CancellationToken));
+
+        await session.SendMessageAsync(
+            new JsonRpcRequest { Method = RequestMethods.Initialize, Id = new RequestId(2) },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, sseEndpointPostCount);
+
+        await ssePipe.Writer.CompleteAsync();
+    }
+
+    // 415 is outside the spec's 400/404/405 SSE-fallback allowlist, so AutoDetect must surface it
+    // without a deprecated GET — including when the failing request happens to be server/discover.
+    [Fact]
+    public async Task AutoDetectMode_SkipsSseFallback_WhenDiscoverProbeFailsWithNonAllowlistedStatus()
+    {
+        var options = new HttpClientTransportOptions
+        {
+            Endpoint = new Uri("http://localhost"),
+            TransportMode = HttpTransportMode.AutoDetect,
+            Name = "AutoDetect discover probe 415 test client"
+        };
+
+        using var mockHttpHandler = new MockHttpHandler();
+        using var httpClient = new HttpClient(mockHttpHandler);
+        await using var transport = new HttpClientTransport(options, httpClient, LoggerFactory);
+        var getCount = 0;
+
+        mockHttpHandler.RequestHandler = request =>
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                getCount++;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.MethodNotAllowed));
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.UnsupportedMediaType)
+            {
+                Content = new StringContent("Content-Type must be 'application/json'"),
+            });
+        };
+
+        await using var session = await transport.ConnectAsync(TestContext.Current.CancellationToken);
+
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            session.SendMessageAsync(
+                new JsonRpcRequest { Method = RequestMethods.ServerDiscover, Id = new RequestId(1) },
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, getCount);
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, ex.Data["ModelContextProtocol.HttpStatusCode"]);
+        Assert.DoesNotContain(
+            MockLoggerProvider.LogMessages,
+            m => m.Message.Contains("falling back to SSE transport"));
     }
 }

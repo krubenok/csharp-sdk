@@ -35,6 +35,7 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
     private readonly bool _validateAuthorizationResponseState;
     private readonly bool _validateAuthorizationResponseIssuer;
     private readonly Uri? _clientMetadataDocumentUri;
+    private readonly string? _configuredClientId;
 
     // _dcrClientName, _dcrClientUri, _dcrInitialAccessToken, _dcrConfiguredApplicationType and _dcrResponseDelegate are used for dynamic client registration (RFC 7591)
     private readonly string? _dcrClientName;
@@ -49,13 +50,15 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
     private string? _clientId;
     private string? _clientSecret;
     private string? _tokenEndpointAuthMethod;
+    private string? _clientCredentialsAuthorizationServer;
     private ITokenCache _tokenCache;
     private AuthorizationServerMetadata? _authServerMetadata;
+    private string? _resourceUri;
 
     // Coalesces concurrent token acquisition so that when multiple in-flight requests observe an
     // expired token (or a 401) at the same time, only the first runs the refresh/authorization flow
     // while the others await its result. This also serializes all reads and writes to the mutable auth
-    // state below (_authServerMetadata, _clientId, _clientSecret, _tokenEndpointAuthMethod) as well as
+    // state (_authServerMetadata, _resourceUri, _clientId, _clientSecret, _tokenEndpointAuthMethod) as well as
     // the accumulated scope set and step-up tracking (_accumulatedScopes, _hasAttemptedStepUp), so those
     // fields need no separate lock.
     //
@@ -96,6 +99,7 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
         }
 
         _clientId = options.ClientId;
+        _configuredClientId = options.ClientId;
         _clientSecret = options.ClientSecret;
         _redirectUri = options.RedirectUri ?? throw new ArgumentException("ClientOAuthOptions.RedirectUri must configured.", nameof(options));
         _configuredScopes = options.Scopes is null ? null : string.Join(" ", options.Scopes);
@@ -195,7 +199,11 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
         if (request.Headers.Authorization is null && request.RequestUri is not null)
         {
             string? accessToken;
-            (accessToken, attemptedRefresh) = await GetAccessTokenSilentAsync(request.RequestUri, cancellationToken).ConfigureAwait(false);
+            using (message?.Context?.RequestTimeout?.Suspend())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                (accessToken, attemptedRefresh) = await GetAccessTokenSilentAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             if (!string.IsNullOrEmpty(accessToken))
             {
@@ -216,7 +224,7 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
         return response;
     }
 
-    private async Task<(string? AccessToken, bool AttemptedRefresh)> GetAccessTokenSilentAsync(Uri resourceUri, CancellationToken cancellationToken)
+    private async Task<(string? AccessToken, bool AttemptedRefresh)> GetAccessTokenSilentAsync(CancellationToken cancellationToken)
     {
         var tokens = await _tokenCache.GetTokensAsync(cancellationToken).ConfigureAwait(false);
 
@@ -244,9 +252,11 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
             return (current.AccessToken, true);
         }
 
-        if (_authServerMetadata is not null && current?.RefreshToken is { Length: > 0 } refreshToken)
+        if (_authServerMetadata is not null &&
+            current?.RefreshToken is { Length: > 0 } refreshToken &&
+            CachedTokensMatchClientCredentials(current, _clientCredentialsAuthorizationServer))
         {
-            var accessToken = await RefreshTokensAsync(refreshToken, resourceUri.ToString(), _authServerMetadata, cancellationToken).ConfigureAwait(false);
+            var accessToken = await RefreshTokensAsync(refreshToken, _resourceUri, _authServerMetadata, cancellationToken).ConfigureAwait(false);
             return (accessToken, true);
         }
 
@@ -303,7 +313,12 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
             throw new McpException($"The server does not support the '{BearerScheme}' authentication scheme. Server supports: [{serverSchemes}].");
         }
 
-        var accessToken = await GetAccessTokenAsync(response, attemptedRefresh, usedAccessToken, cancellationToken).ConfigureAwait(false);
+        string accessToken;
+        using (originalJsonRpcMessage?.Context?.RequestTimeout?.Suspend())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            accessToken = await GetAccessTokenAsync(response, attemptedRefresh, usedAccessToken, cancellationToken).ConfigureAwait(false);
+        }
 
         using var retryRequest = new HttpRequestMessage(originalRequest.Method, originalRequest.RequestUri);
 
@@ -427,7 +442,10 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
         // provider has not assigned a client ID yet. Restoring it here makes the refresh below possible
         // and avoids a redundant dynamic client registration in the assignment block.
         var cachedTokens = await _tokenCache.GetTokensAsync(cancellationToken).ConfigureAwait(false);
-        RestoreCachedClientCredentials(cachedTokens);
+        RestoreCachedClientCredentials(cachedTokens, selectedAuthServer);
+        BindClientCredentialsToAuthorizationServer(selectedAuthServer);
+        var cachedTokensMatchClientCredentials =
+            CachedTokensMatchClientCredentials(cachedTokens, selectedAuthServer.OriginalString);
 
         // Only attempt a token refresh if we haven't attempted to already for this request.
         // Also only attempt a token refresh for a 401 Unauthorized responses. Other response status codes
@@ -439,12 +457,15 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
         if (!attemptedRefresh &&
             response.StatusCode == System.Net.HttpStatusCode.Unauthorized &&
             !string.IsNullOrEmpty(_clientId) &&
+            cachedTokensMatchClientCredentials &&
             cachedTokens is { RefreshToken: { Length: > 0 } refreshToken })
         {
             var accessToken = await RefreshTokensAsync(refreshToken, resourceUri, authServerMetadata, cancellationToken).ConfigureAwait(false);
             if (accessToken is not null)
             {
-                // A non-null result indicates the refresh succeeded and the new tokens have been stored.
+                // Retain discovery state when a cold-start refresh bypasses registration below.
+                _authServerMetadata = authServerMetadata;
+                _resourceUri = resourceUri;
                 return accessToken;
             }
         }
@@ -463,11 +484,15 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
             }
         }
 
+        _clientCredentialsAuthorizationServer = selectedAuthServer.OriginalString;
+
         // Determine the token endpoint auth method from server metadata if not already set by DCR.
         _tokenEndpointAuthMethod ??= authServerMetadata.TokenEndpointAuthMethodsSupported?.FirstOrDefault();
 
-        // Store auth server metadata for future refresh operations
+        // Enable silent refresh only after client registration is ready.
+        // A successful cold-start refresh initializes this state before its early return.
         _authServerMetadata = authServerMetadata;
+        _resourceUri = resourceUri;
 
         // Perform the OAuth flow
         return await InitiateAuthorizationCodeFlowAsync(protectedResourceMetadata, authServerMetadata, cancellationToken).ConfigureAwait(false);
@@ -493,7 +518,7 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
     private async Task<AuthorizationServerMetadata> GetAuthServerMetadataAsync(Uri authServerUri, string? resourceUri, CancellationToken cancellationToken)
     {
         // Tracks whether at least one well-known endpoint returned a structurally valid metadata document.
-        // This distinguishes "no metadata document was found" (eligible for the 2025-03-26 legacy fallback)
+        // This distinguishes "no metadata document was found" (eligible for the opt-in 2025-03-26 legacy fallback)
         // from "a metadata document exists but failed PKCE validation" (must not fall back to synthesized defaults).
         var metadataDocumentFound = false;
         McpException? pkceValidationFailure = null;
@@ -563,6 +588,11 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
                 // another well-known endpoint.
                 throw;
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Caller cancellation or the initialization timeout must not be reported as missing metadata.
+                throw;
+            }
             catch (Exception ex)
             {
                 LogErrorFetchingAuthServerMetadata(ex, wellKnownEndpoint);
@@ -614,8 +644,14 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
 
         if (resourceUri is null)
         {
+            if (!AppContext.TryGetSwitch("ModelContextProtocol.Authentication.AllowLegacyOAuthMetadataFallback", out var enabled) || !enabled)
+            {
+                ThrowFailedToHandleUnauthorizedResponse("Authorization server metadata could not be discovered, so PKCE support could not be verified.");
+            }
+
             // 2025-03-26 backcompat: when PRM is unavailable and no auth server metadata document was
-            // discovered, fall back to default endpoint paths per the 2025-03-26 spec.
+            // discovered, allow explicitly opted-in hosts to use the default endpoint paths.
+            LogUsingLegacyOAuthMetadataFallback(authServerUri);
             return BuildDefaultAuthServerMetadata(authServerUri);
         }
 
@@ -682,7 +718,7 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
             return null;
         }
 
-        var tokens = await HandleSuccessfulTokenResponseAsync(httpResponse, cancellationToken).ConfigureAwait(false);
+        var tokens = await HandleSuccessfulTokenResponseAsync(httpResponse, refreshToken, cancellationToken).ConfigureAwait(false);
         LogOAuthTokenRefreshCompleted();
         return tokens.AccessToken;
     }
@@ -810,7 +846,7 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
         using var httpResponse = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         await httpResponse.EnsureSuccessStatusCodeWithResponseBodyAsync(cancellationToken).ConfigureAwait(false);
 
-        var tokens = await HandleSuccessfulTokenResponseAsync(httpResponse, cancellationToken).ConfigureAwait(false);
+        var tokens = await HandleSuccessfulTokenResponseAsync(httpResponse, previousRefreshToken: null, cancellationToken).ConfigureAwait(false);
         LogOAuthAuthorizationCompleted();
         return tokens.AccessToken;
     }
@@ -847,7 +883,7 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
         return request;
     }
 
-    private async Task<TokenContainer> HandleSuccessfulTokenResponseAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    private async Task<TokenContainer> HandleSuccessfulTokenResponseAsync(HttpResponseMessage response, string? previousRefreshToken, CancellationToken cancellationToken)
     {
         using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         var tokenResponse = await JsonSerializer.DeserializeAsync(stream, McpJsonUtilities.JsonContext.Default.TokenResponse, cancellationToken).ConfigureAwait(false);
@@ -865,7 +901,8 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
         TokenContainer tokens = new()
         {
             AccessToken = tokenResponse.AccessToken,
-            RefreshToken = tokenResponse.RefreshToken,
+            // RFC 6749 section 6 allows a refresh response to omit a replacement refresh token.
+            RefreshToken = tokenResponse.RefreshToken ?? previousRefreshToken,
             ExpiresIn = tokenResponse.ExpiresIn,
             TokenType = tokenResponse.TokenType,
             Scope = tokenResponse.Scope,
@@ -875,6 +912,7 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
             ClientId = _clientId,
             ClientSecret = _clientSecret,
             TokenEndpointAuthMethod = _tokenEndpointAuthMethod,
+            AuthorizationServer = _clientCredentialsAuthorizationServer,
         };
 
         await _tokenCache.StoreTokensAsync(tokens, cancellationToken).ConfigureAwait(false);
@@ -1458,33 +1496,94 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
     /// <summary>
     /// Restores the client registration persisted alongside cached tokens when this provider has not been
     /// assigned a client ID yet. This allows a durable <see cref="ITokenCache"/> to use a refresh token that
-    /// survived a process restart without re-running dynamic client registration. An explicitly configured
+    /// survived a process restart without re-running dynamic client registration. Credentials are restored
+    /// only when the cache binds them to the currently selected authorization server. An explicitly configured
     /// client ID always takes precedence, so nothing is restored when one is already available.
     /// </summary>
     /// <remarks>
     /// Callers must hold <c>_tokenAcquisitionLock</c>: this writes the shared <c>_clientId</c>,
     /// <c>_clientSecret</c>, and <c>_tokenEndpointAuthMethod</c> fields, which the lock serializes.
-    /// Like the persisted refresh token, the restored client ID assumes the durable cache belongs to the
-    /// current authorization server; a single cache shared across authorization servers is not supported
-    /// (an inherent property of the single-container <see cref="ITokenCache"/> design).
+    /// A single cache still stores only one registration, but the persisted authorization-server issuer
+    /// prevents that registration from being reused with a different server.
     /// </remarks>
-    private void RestoreCachedClientCredentials(TokenContainer? tokens)
+    private void RestoreCachedClientCredentials(TokenContainer? tokens, Uri selectedAuthServer)
     {
-        if (!string.IsNullOrEmpty(_clientId) || string.IsNullOrEmpty(tokens?.ClientId))
+        if (tokens is null)
         {
             return;
         }
 
-        // The guard above guarantees a non-null container, but the older nullable flow analysis on
-        // netstandard2.0/net472 doesn't infer that from the null-conditional check, so capture a
-        // non-null local and use it for every assignment.
+        // The guard above guarantees a non-null container, but older nullable flow analysis on
+        // netstandard2.0/net472 may not preserve that narrowing, so capture a non-null local.
         var cached = tokens!;
+
+        if (_configuredClientId is not null)
+        {
+            if (!string.Equals(cached.ClientId, _configuredClientId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            // Restore the issuer binding independently from the secret. A rotated configured secret
+            // must not make credentials previously bound to another issuer appear portable.
+            _clientCredentialsAuthorizationServer = cached.AuthorizationServer;
+
+            if (string.Equals(cached.AuthorizationServer, selectedAuthServer.OriginalString, StringComparison.Ordinal) &&
+                string.Equals(cached.ClientSecret, _clientSecret, StringComparison.Ordinal))
+            {
+                _tokenEndpointAuthMethod ??= cached.TokenEndpointAuthMethod;
+            }
+
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(_clientId))
+        {
+            return;
+        }
+
+        if (string.IsNullOrEmpty(cached.ClientId) ||
+            !string.Equals(cached.AuthorizationServer, selectedAuthServer.OriginalString, StringComparison.Ordinal))
+        {
+            return;
+        }
 
         // Assign _clientId last. Callers treat a non-empty _clientId as "registration complete", so the
         // secret and auth method must already be in place before _clientId becomes observable.
         _clientSecret ??= cached.ClientSecret;
         _tokenEndpointAuthMethod ??= cached.TokenEndpointAuthMethod;
         _clientId = cached.ClientId;
+        _clientCredentialsAuthorizationServer = cached.AuthorizationServer;
+    }
+
+    private bool CachedTokensMatchClientCredentials(TokenContainer? tokens, string? authorizationServer) =>
+        tokens is not null &&
+        string.Equals(tokens.AuthorizationServer, authorizationServer, StringComparison.Ordinal) &&
+        string.Equals(tokens.ClientId, _clientId, StringComparison.Ordinal) &&
+        string.Equals(tokens.ClientSecret, _clientSecret, StringComparison.Ordinal) &&
+        string.Equals(tokens.TokenEndpointAuthMethod, _tokenEndpointAuthMethod, StringComparison.Ordinal);
+
+    private void BindClientCredentialsToAuthorizationServer(Uri selectedAuthServer)
+    {
+        if (_clientCredentialsAuthorizationServer is null ||
+            string.Equals(_clientCredentialsAuthorizationServer, selectedAuthServer.OriginalString, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (_configuredClientId is not null)
+        {
+            ThrowFailedToHandleUnauthorizedResponse(
+                $"The authorization server changed from '{_clientCredentialsAuthorizationServer}' to '{selectedAuthServer.OriginalString}', " +
+                "but explicitly configured client credentials cannot be assumed to be valid for the new authorization server.");
+        }
+
+        _clientId = null;
+        _clientSecret = null;
+        _tokenEndpointAuthMethod = null;
+        _authServerMetadata = null;
+        _resourceUri = null;
+        _clientCredentialsAuthorizationServer = null;
     }
 
     [DoesNotReturn]
@@ -1505,6 +1604,9 @@ internal sealed partial class ClientOAuthProvider : McpHttpClient
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Authorization server metadata from {Endpoint} does not satisfy PKCE requirements; skipping it and trying the next discovery endpoint.")]
     partial void LogAuthServerMetadataMissingPkceSupport(Exception ex, Uri endpoint);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Using legacy OAuth metadata fallback for {AuthorizationServer} because ModelContextProtocol.Authentication.AllowLegacyOAuthMetadataFallback is enabled. PKCE support could not be verified. Use this switch only for trusted deployments whose PKCE support has been independently established.")]
+    partial void LogUsingLegacyOAuthMetadataFallback(Uri authorizationServer);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Performing dynamic client registration with {RegistrationEndpoint}")]
     partial void LogPerformingDynamicClientRegistration(Uri registrationEndpoint);

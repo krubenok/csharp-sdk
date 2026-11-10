@@ -102,6 +102,22 @@ public sealed class IdentityAssertionGrantProvider
             throw new ArgumentNullException($"{nameof(options)}.{nameof(options.IdTokenCallback)}");
         }
 
+        if (options.TokenEndpointAuthMethod is not null &&
+            options.TokenEndpointAuthMethod is not ("client_secret_basic" or "client_secret_post" or "none"))
+        {
+            throw new ArgumentException(
+                $"{nameof(options.TokenEndpointAuthMethod)} must be 'client_secret_basic', 'client_secret_post', or 'none'.",
+                $"{nameof(options)}.{nameof(options.TokenEndpointAuthMethod)}");
+        }
+
+        if (options.TokenEndpointAuthMethod is "client_secret_basic" or "client_secret_post" &&
+            string.IsNullOrEmpty(options.ClientSecret))
+        {
+            throw new ArgumentException(
+                $"{nameof(options.ClientSecret)} is required when {nameof(options.TokenEndpointAuthMethod)} is '{options.TokenEndpointAuthMethod}'.",
+                $"{nameof(options)}.{nameof(options.ClientSecret)}");
+        }
+
         _options = options;
         _httpClient = httpClient;
         _logger = (ILogger?)loggerFactory?.CreateLogger<IdentityAssertionGrantProvider>() ?? NullLogger.Instance;
@@ -110,7 +126,9 @@ public sealed class IdentityAssertionGrantProvider
     /// <summary>
     /// Performs the full Cross-Application Access flow to obtain an access token for the given MCP resource.
     /// </summary>
-    /// <param name="resourceUrl">The MCP resource server URL.</param>
+    /// <param name="resourceUrl">
+    /// The canonical MCP resource identifier. Its <see cref="Uri.OriginalString"/> is sent unchanged as the resource parameter.
+    /// </param>
     /// <param name="authorizationServerUrl">The MCP authorization server URL.</param>
     /// <param name="cancellationToken">The <see cref="CancellationToken"/> to monitor for cancellation requests.</param>
     /// <returns>A <see cref="TokenContainer"/> containing the access token.</returns>
@@ -181,7 +199,7 @@ public sealed class IdentityAssertionGrantProvider
             {
                 TokenEndpoint = idpTokenEndpoint,
                 Audience = authorizationServerUrl.ToString(),
-                Resource = resourceUrl.ToString(),
+                Resource = resourceUrl.OriginalString,
                 IdToken = idToken,
                 ClientId = _options.IdpClientId,
                 ClientSecret = _options.IdpClientSecret,
@@ -197,6 +215,7 @@ public sealed class IdentityAssertionGrantProvider
                 Assertion = jag,
                 ClientId = _options.ClientId,
                 ClientSecret = _options.ClientSecret,
+                TokenEndpointAuthMethod = SelectTokenEndpointAuthMethod(mcpAuthMetadata),
                 Scope = _options.Scope,
             }, _httpClient, cancellationToken).ConfigureAwait(false);
 
@@ -204,6 +223,50 @@ public sealed class IdentityAssertionGrantProvider
         _logger.LogDebug("Cross-Application Access flow completed successfully");
 
         return tokens;
+    }
+
+    private string SelectTokenEndpointAuthMethod(AuthorizationServerMetadata metadata)
+    {
+        var supportedMethods = metadata.TokenEndpointAuthMethodsSupported;
+        if (_options.TokenEndpointAuthMethod is { } configuredMethod)
+        {
+            if (supportedMethods is { Count: > 0 } &&
+                !supportedMethods.Contains(configuredMethod, StringComparer.Ordinal))
+            {
+                throw new IdentityAssertionGrantException(
+                    $"The configured token endpoint authentication method '{configuredMethod}' is not advertised by the MCP authorization server.");
+            }
+
+            return configuredMethod;
+        }
+
+        if (string.IsNullOrEmpty(_options.ClientSecret))
+        {
+            if (supportedMethods is null or { Count: 0 } ||
+                supportedMethods.Contains("none", StringComparer.Ordinal))
+            {
+                return "none";
+            }
+
+            throw new IdentityAssertionGrantException(
+                "The MCP authorization server does not advertise a token endpoint authentication method usable without a client secret.");
+        }
+
+        // Preserve the provider's existing client_secret_post behavior when it is available.
+        // RFC 8414 defines this metadata as a list of supported methods, not a preference order.
+        if (supportedMethods is null or { Count: 0 } ||
+            supportedMethods.Contains("client_secret_post", StringComparer.Ordinal))
+        {
+            return "client_secret_post";
+        }
+
+        if (supportedMethods.Contains("client_secret_basic", StringComparer.Ordinal))
+        {
+            return "client_secret_basic";
+        }
+
+        throw new IdentityAssertionGrantException(
+            "The MCP authorization server does not advertise a supported token endpoint authentication method.");
     }
 
     /// <summary>

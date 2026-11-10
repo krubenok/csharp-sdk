@@ -37,6 +37,72 @@ public class McpAppsTests
 
     #region F2: Typed Metadata Models
 
+    [Theory]
+    [InlineData("""{"resourceUri":"ui://app"}""", "ui://app")]
+    [InlineData("""{"ResourceUri":"ui://other"}""", null)]
+    [InlineData("""{"resourceUri":"ui://app","ResourceUri":"ui://other"}""", "ui://app")]
+    [InlineData("""{"ResourceUri":"ui://other","resourceUri":"ui://app"}""", "ui://app")]
+    public void SerializerOptions_MatchesToolMetadataCaseSensitively(string json, string? expectedUri)
+    {
+        var meta = JsonSerializer.Deserialize<McpUiToolMeta>(json, McpApps.SerializerOptions);
+
+        Assert.NotNull(meta);
+        Assert.Equal(expectedUri, meta.ResourceUri);
+    }
+
+    [Theory]
+    [InlineData("""{"mimeTypes":["text/html"]}""", "text/html")]
+    [InlineData("""{"MimeTypes":["text/plain"]}""", null)]
+    [InlineData("""{"mimeTypes":["text/html"],"MimeTypes":["text/plain"]}""", "text/html")]
+    [InlineData("""{"MimeTypes":["text/plain"],"mimeTypes":["text/html"]}""", "text/html")]
+    public void SerializerOptions_AgreesWithGetUiCapability(string json, string? expectedMimeType)
+    {
+        var deserialized = JsonSerializer.Deserialize<McpUiClientCapabilities>(json, McpApps.SerializerOptions);
+        using var document = JsonDocument.Parse(json);
+#pragma warning disable MCPEXP001
+        var capabilities = new ClientCapabilities
+        {
+            Extensions = new Dictionary<string, object>
+            {
+                [McpApps.ExtensionId] = document.RootElement,
+            },
+        };
+#pragma warning restore MCPEXP001
+
+        var capability = McpApps.GetUiCapability(capabilities);
+
+        Assert.NotNull(deserialized);
+        Assert.NotNull(capability);
+        if (expectedMimeType is null)
+        {
+            Assert.Null(deserialized.MimeTypes);
+            Assert.Null(capability.MimeTypes);
+        }
+        else
+        {
+            Assert.Equal(expectedMimeType, Assert.Single(deserialized.MimeTypes!));
+            Assert.Equal(expectedMimeType, Assert.Single(capability.MimeTypes!));
+        }
+    }
+
+    [Fact]
+    public void SerializerOptions_DoesNotChangeDefaultOrCallerOptions()
+    {
+        var options = new JsonSerializerOptions(McpApps.SerializerOptions)
+        {
+            PropertyNameCaseInsensitive = true,
+        };
+
+        var meta = JsonSerializer.Deserialize<McpUiToolMeta>("""{"ResourceUri":"ui://app"}""", options);
+
+        Assert.NotNull(meta);
+        Assert.Equal("ui://app", meta.ResourceUri);
+        Assert.True(options.PropertyNameCaseInsensitive);
+        Assert.True(McpJsonUtilities.DefaultOptions.PropertyNameCaseInsensitive);
+        Assert.False(McpApps.SerializerOptions.PropertyNameCaseInsensitive);
+        Assert.True(McpApps.SerializerOptions.IsReadOnly);
+    }
+
     [Fact]
     public void McpUiToolMeta_DefaultsToNull()
     {
@@ -437,6 +503,54 @@ public class McpAppsTests
 
         var weatherTool = toolsWithUi.First(t => t.ProtocolTool.Meta!["ui"]!["resourceUri"]?.GetValue<string>() == "ui://weather/view.html");
         Assert.NotNull(weatherTool);
+    }
+
+    [Fact]
+    public async Task WithMcpApps_RepeatedConcurrentOptionsCreation_AppliesAppUiOncePerTool()
+    {
+        var sc = new ServiceCollection();
+        sc.AddMcpServer()
+            .WithTools([typeof(TestToolsWithAppUi)])
+            .WithMcpApps();
+
+        using var sp = sc.BuildServiceProvider();
+        var factory = sp.GetRequiredService<IOptionsFactory<McpServerOptions>>();
+
+        var creations = Enumerable.Range(0, 8).Select(_ => Task.Run(() =>
+        {
+            for (int i = 0; i < 25; i++)
+            {
+                var options = factory.Create(Options.DefaultName);
+                Assert.True(options.Capabilities!.Extensions!.ContainsKey(McpApps.ExtensionId));
+                Assert.Equal(2, options.ToolCollection!.Count(t => t.ProtocolTool.Meta?["ui"] is not null));
+            }
+        }, TestContext.Current.CancellationToken));
+
+        await Task.WhenAll(creations);
+
+        var tools = factory.Create(Options.DefaultName).ToolCollection!;
+        var weatherTool = tools.Single(t => t.ProtocolTool.Meta?["ui"]?["resourceUri"]?.GetValue<string>() == "ui://weather/view.html");
+        Assert.Single(weatherTool.ProtocolTool.Meta!, kvp => kvp.Key == "ui");
+    }
+
+    [Fact]
+    public void WithMcpApps_ToolCreatedPerOptions_IsProcessed()
+    {
+        var method = typeof(TestToolsWithAppUi).GetMethod(nameof(TestToolsWithAppUi.WeatherTool))!;
+
+        var sc = new ServiceCollection();
+        sc.AddMcpServer(options => options.ToolCollection = [McpServerTool.Create(method)])
+            .WithMcpApps();
+
+        using var sp = sc.BuildServiceProvider();
+        var factory = sp.GetRequiredService<IOptionsFactory<McpServerOptions>>();
+
+        var tool1 = Assert.Single(factory.Create(Options.DefaultName).ToolCollection!);
+        var tool2 = Assert.Single(factory.Create(Options.DefaultName).ToolCollection!);
+
+        Assert.NotSame(tool1, tool2);
+        Assert.NotNull(tool1.ProtocolTool.Meta?["ui"]);
+        Assert.NotNull(tool2.ProtocolTool.Meta?["ui"]);
     }
 
     [Fact]

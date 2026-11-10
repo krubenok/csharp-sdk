@@ -4,6 +4,7 @@ using ModelContextProtocol.Server;
 using ModelContextProtocol.Tests.Utils;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -288,11 +289,20 @@ public class McpServerTests : LoggedTest
                 Assert.Equal(expectedAssemblyName.Version?.ToString() ?? "1.0.0", result.ServerInfo.Version);
                 Assert.Equal("2024-11-05", result.ProtocolVersion);
                 Assert.Equal("2024-11-05", server.NegotiatedProtocolVersion);
+                Assert.True(Assert.IsType<JsonObject>(response)["capabilities"]!.AsObject().ContainsKey("logging"));
             });
     }
 
-    [Fact]
-    public async Task RejectedReservedPerRequestMetadata_DoesNotEstablishProtocolVersion()
+    [Theory]
+    [InlineData("2025-11-25", "\"2025-03-26\"", null)]
+    [InlineData("2025-11-25", "\"2026-07-28\"", null)]
+    [InlineData("2025-11-25", "{}", null)]
+    [InlineData("2026-07-28", "\"2025-11-25\"", McpErrorCode.HeaderMismatch)]
+    [InlineData("2026-07-28", "\"9999-99-99\"", McpErrorCode.HeaderMismatch)]
+    [InlineData("2026-07-28", "{}", McpErrorCode.InvalidParams)]
+    [InlineData("9999-99-99", "{}", McpErrorCode.UnsupportedProtocolVersion)]
+    public async Task TransportProtocolVersion_IsValidatedBeforeBodyMetadata(
+        string transportVersion, string metadataVersionJson, McpErrorCode? expectedError)
     {
         var ct = TestContext.Current.CancellationToken;
         await using var transport = new TestServerTransport();
@@ -302,71 +312,44 @@ public class McpServerTests : LoggedTest
         await using var server = McpServer.Create(transport, options, LoggerFactory);
         var runTask = server.RunAsync(ct);
 
-        var rejectedResponse = new TaskCompletionSource<JsonRpcError>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var acceptedResponse = new TaskCompletionSource<JsonRpcMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<JsonRpcMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
         transport.OnMessageSent = message =>
         {
-            if (message is JsonRpcError { Id: var errorId } error && errorId.ToString() == "1")
+            if (message is JsonRpcMessageWithId { Id: var responseId } && responseId.ToString() == "1")
             {
-                rejectedResponse.TrySetResult(error);
-            }
-            else if (message is JsonRpcMessageWithId { Id: var responseId } && responseId.ToString() == "2")
-            {
-                acceptedResponse.TrySetResult(message);
+                response.TrySetResult(message);
             }
         };
 
         await transport.SendClientMessageAsync(new JsonRpcRequest
         {
             Id = new RequestId(1),
-            Method = RequestMethods.ToolsList,
+            Method = RequestMethods.Ping,
             Params = new JsonObject
             {
                 ["_meta"] = new JsonObject
                 {
-                    [MetaKeys.ClientInfo] = new JsonObject
-                    {
-                        ["name"] = "test-client",
-                        ["version"] = "1.0.0",
-                    },
+                    [MetaKeys.ProtocolVersion] = JsonNode.Parse(metadataVersionJson),
                 },
             },
             Context = new JsonRpcMessageContext
             {
-                ProtocolVersion = McpProtocolVersions.November2025ProtocolVersion,
+                ProtocolVersion = transportVersion,
                 ClientInfo = new Implementation { Name = "test-client", Version = "1.0.0" },
             },
         }, ct);
 
-        var error = await rejectedResponse.Task.WaitAsync(TestConstants.DefaultTimeout, ct);
-        Assert.Equal((int)McpErrorCode.InvalidRequest, error.Error.Code);
-        Assert.Null(server.NegotiatedProtocolVersion);
-
-        var clientInfo = new Implementation { Name = "test-client", Version = "1.0.0" };
-        var clientCapabilities = new ClientCapabilities();
-        await transport.SendClientMessageAsync(new JsonRpcRequest
+        var message = await response.Task.WaitAsync(TestConstants.DefaultTimeout, ct);
+        if (expectedError is { } errorCode)
         {
-            Id = new RequestId(2),
-            Method = RequestMethods.ToolsList,
-            Params = new JsonObject
-            {
-                ["_meta"] = new JsonObject
-                {
-                    [MetaKeys.ProtocolVersion] = McpProtocolVersions.July2026ProtocolVersion,
-                    [MetaKeys.ClientInfo] = JsonSerializer.SerializeToNode(clientInfo, McpJsonUtilities.DefaultOptions),
-                    [MetaKeys.ClientCapabilities] = new JsonObject(),
-                },
-            },
-            Context = new JsonRpcMessageContext
-            {
-                ProtocolVersion = McpProtocolVersions.July2026ProtocolVersion,
-                ClientInfo = clientInfo,
-                ClientCapabilities = clientCapabilities,
-            },
-        }, ct);
-
-        await acceptedResponse.Task.WaitAsync(TestConstants.DefaultTimeout, ct);
-        Assert.Equal(McpProtocolVersions.July2026ProtocolVersion, server.NegotiatedProtocolVersion);
+            Assert.Equal((int)errorCode, Assert.IsType<JsonRpcError>(message).Error.Code);
+            Assert.Null(server.NegotiatedProtocolVersion);
+        }
+        else
+        {
+            Assert.IsType<JsonRpcResponse>(message);
+            Assert.Equal(transportVersion, server.NegotiatedProtocolVersion);
+        }
 
         await transport.DisposeAsync();
         await runTask;
@@ -535,6 +518,52 @@ public class McpServerTests : LoggedTest
 
         await transport.DisposeAsync();
         await runTask;
+    }
+
+    [Fact]
+    public async Task Completion_AutoPopulated_FromPromptAllowedValues_SharedAcrossServers()
+    {
+        McpServerPrimitiveCollection<McpServerPrompt> prompts = [McpServerPrompt.Create(
+            (
+                [System.ComponentModel.DataAnnotations.AllowedValues("dog", "cat", "cow")] string animal
+            ) => animal,
+            new McpServerPromptCreateOptions { Name = "test-prompt" })];
+
+        foreach (var (partial, expected) in new[] { ("c", new[] { "cat", "cow" }), ("d", new[] { "dog" }) })
+        {
+            await using var transport = new TestServerTransport();
+            var options = CreateOptions();
+            options.PromptCollection = new(prompts);
+
+            await using var server = McpServer.Create(transport, options, LoggerFactory);
+            var runTask = server.RunAsync(TestContext.Current.CancellationToken);
+
+            var receivedMessage = new TaskCompletionSource<JsonRpcResponse>();
+            transport.OnMessageSent = (message) =>
+            {
+                if (message is JsonRpcResponse response && response.Id.ToString() == "55")
+                    receivedMessage.SetResult(response);
+            };
+
+            await transport.SendMessageAsync(new JsonRpcRequest
+            {
+                Method = RequestMethods.CompletionComplete,
+                Id = new RequestId(55),
+                Params = JsonSerializer.SerializeToNode(new CompleteRequestParams
+                {
+                    Ref = new PromptReference { Name = "test-prompt" },
+                    Argument = new Argument { Name = "animal", Value = partial }
+                }, McpJsonUtilities.DefaultOptions)
+            }, TestContext.Current.CancellationToken);
+
+            var response = await receivedMessage.Task.WaitAsync(TestConstants.DefaultTimeout, TestContext.Current.CancellationToken);
+            var result = JsonSerializer.Deserialize<CompleteResult>(response.Result, McpJsonUtilities.DefaultOptions);
+            Assert.NotNull(result?.Completion);
+            Assert.Equal(expected, result.Completion.Values);
+
+            await transport.DisposeAsync();
+            await runTask;
+        }
     }
 
     [Fact]
@@ -978,6 +1007,84 @@ public class McpServerTests : LoggedTest
     }
 
     [Fact]
+    public async Task Can_Handle_Call_Tool_Requests_With_Embedded_Pdf_Resource_On_Wire()
+    {
+        byte[] pdfBytes = Encoding.ASCII.GetBytes("%PDF-1.7\n");
+        await using var transport = new TestServerTransport();
+        var options = CreateOptions(new ServerCapabilities { Tools = new() });
+        options.Handlers.CallToolHandler = async (request, ct) =>
+        {
+            return new CallToolResult
+            {
+                Content =
+                [
+                    new EmbeddedResourceBlock
+                    {
+                        Resource = BlobResourceContents.FromBytes(
+                            pdfBytes,
+                            "file:///mypdf.pdf",
+                            "application/pdf")
+                    }
+                ]
+            };
+        };
+        options.Handlers.ListToolsHandler = (request, ct) => throw new NotImplementedException();
+
+        await using var server = McpServer.Create(transport, options, LoggerFactory);
+        var runTask = server.RunAsync(TestContext.Current.CancellationToken);
+        var receivedMessage = new TaskCompletionSource<JsonRpcResponse>();
+
+        transport.OnMessageSent = message =>
+        {
+            if (message is JsonRpcResponse response && response.Id.ToString() == "55")
+            {
+                receivedMessage.SetResult(response);
+            }
+        };
+
+        await transport.SendMessageAsync(
+            new JsonRpcRequest
+            {
+                Method = RequestMethods.ToolsCall,
+                Id = new RequestId(55)
+            },
+            TestContext.Current.CancellationToken);
+
+        var response = await receivedMessage.Task.WaitAsync(
+            TestConstants.DefaultTimeout,
+            TestContext.Current.CancellationToken);
+        string wireJson = JsonSerializer.Serialize<JsonRpcMessage>(
+            response,
+            McpJsonUtilities.DefaultOptions);
+
+        using JsonDocument document = JsonDocument.Parse(wireJson);
+        JsonElement root = document.RootElement;
+        Assert.Equal("2.0", root.GetProperty("jsonrpc").GetString());
+        Assert.Equal(55, root.GetProperty("id").GetInt32());
+
+        JsonElement resourceBlock = root.GetProperty("result").GetProperty("content")[0];
+        Assert.Equal("resource", resourceBlock.GetProperty("type").GetString());
+        JsonElement resource = resourceBlock.GetProperty("resource");
+        Assert.Equal("file:///mypdf.pdf", resource.GetProperty("uri").GetString());
+        Assert.Equal("application/pdf", resource.GetProperty("mimeType").GetString());
+        Assert.Equal(Convert.ToBase64String(pdfBytes), resource.GetProperty("blob").GetString());
+
+        var roundTrippedMessage = JsonSerializer.Deserialize<JsonRpcMessage>(
+            wireJson,
+            McpJsonUtilities.DefaultOptions);
+        var roundTrippedResponse = Assert.IsType<JsonRpcResponse>(roundTrippedMessage);
+        var result = roundTrippedResponse.Result.Deserialize<CallToolResult>(
+            McpJsonUtilities.DefaultOptions);
+        Assert.NotNull(result);
+        var embeddedResource = Assert.IsType<EmbeddedResourceBlock>(Assert.Single(result.Content));
+        var pdfResource = Assert.IsType<BlobResourceContents>(embeddedResource.Resource);
+        Assert.Equal(pdfBytes, pdfResource.DecodedData.ToArray());
+
+        await transport.DisposeAsync();
+        await runTask;
+    }
+
+    [Fact]
     public async Task Can_Handle_Call_Tool_Requests_Throws_Exception_If_No_Handler_Assigned()
     {
         await Succeeds_Even_If_No_Handler_Assigned(new ServerCapabilities { Tools = new() }, RequestMethods.ToolsCall, "CallTool handler not configured");
@@ -1231,6 +1338,124 @@ public class McpServerTests : LoggedTest
         var dataDict = Assert.IsType<Dictionary<string, JsonElement>>(error.Error.Data);
         Assert.True(dataDict.ContainsKey("uri"));
         Assert.Equal(ResourceUri, dataDict["uri"].GetString());
+
+        await transport.DisposeAsync();
+        await runTask;
+    }
+
+    [Fact]
+    public async Task Call_Tool_Request_Params_Are_Matched_Case_Sensitively()
+    {
+        await using var transport = new TestServerTransport();
+        var options = CreateOptions(new ServerCapabilities { Tools = new() });
+        var invocations = new List<CallToolRequestParams?>();
+        options.Handlers.CallToolHandler = (request, ct) =>
+        {
+            invocations.Add(request.Params);
+            return new ValueTask<CallToolResult>(new CallToolResult());
+        };
+        options.Handlers.ListToolsHandler = (request, ct) => throw new NotImplementedException();
+
+        await using var server = McpServer.Create(transport, options, LoggerFactory);
+        var runTask = server.RunAsync(TestContext.Current.CancellationToken);
+
+        var replies = new Dictionary<string, TaskCompletionSource<JsonRpcMessageWithId>>
+        {
+            ["1"] = new(),
+            ["2"] = new(),
+            ["3"] = new(),
+            ["4"] = new(),
+            ["5"] = new(),
+        };
+        transport.OnMessageSent = message =>
+        {
+            if (message is JsonRpcResponse or JsonRpcError &&
+                replies.TryGetValue(((JsonRpcMessageWithId)message).Id.ToString(), out var tcs))
+            {
+                tcs.TrySetResult((JsonRpcMessageWithId)message);
+            }
+        };
+
+        // "Name" is not the protocol's "name", so the required property is missing and the tool is not invoked.
+        await transport.SendMessageAsync(
+            new JsonRpcRequest
+            {
+                Method = RequestMethods.ToolsCall,
+                Id = new RequestId(1),
+                Params = JsonNode.Parse("""{"Name":"echo","arguments":{}}"""),
+            },
+            TestContext.Current.CancellationToken);
+        var rejected = await replies["1"].Task.WaitAsync(TestConstants.DefaultTimeout, TestContext.Current.CancellationToken);
+        Assert.IsType<JsonRpcError>(rejected);
+        Assert.Empty(invocations);
+
+        // An alternately cased optional property is not bound either.
+        await transport.SendMessageAsync(
+            new JsonRpcRequest
+            {
+                Method = RequestMethods.ToolsCall,
+                Id = new RequestId(2),
+                Params = JsonNode.Parse("""{"name":"echo","Arguments":{"text":"hi"}}"""),
+            },
+            TestContext.Current.CancellationToken);
+        Assert.IsType<JsonRpcResponse>(await replies["2"].Task.WaitAsync(TestConstants.DefaultTimeout, TestContext.Current.CancellationToken));
+
+        await transport.SendMessageAsync(
+            new JsonRpcRequest
+            {
+                Method = RequestMethods.ToolsCall,
+                Id = new RequestId(3),
+                Params = JsonNode.Parse("""{"name":"echo","arguments":{"text":"hi"}}"""),
+            },
+            TestContext.Current.CancellationToken);
+        Assert.IsType<JsonRpcResponse>(await replies["3"].Task.WaitAsync(TestConstants.DefaultTimeout, TestContext.Current.CancellationToken));
+
+        // When both spellings are present, only "name" is bound, regardless of order. Keys inside "arguments"
+        // are user data and are preserved as distinct entries.
+        await transport.SendMessageAsync(
+            new JsonRpcRequest
+            {
+                Method = RequestMethods.ToolsCall,
+                Id = new RequestId(4),
+                Params = JsonNode.Parse("""{"name":"echo","Name":"other","arguments":{"text":"hi","Text":"HI"}}"""),
+            },
+            TestContext.Current.CancellationToken);
+        Assert.IsType<JsonRpcResponse>(await replies["4"].Task.WaitAsync(TestConstants.DefaultTimeout, TestContext.Current.CancellationToken));
+
+        await transport.SendMessageAsync(
+            new JsonRpcRequest
+            {
+                Method = RequestMethods.ToolsCall,
+                Id = new RequestId(5),
+                Params = JsonNode.Parse("""{"Name":"other","name":"echo"}"""),
+            },
+            TestContext.Current.CancellationToken);
+        Assert.IsType<JsonRpcResponse>(await replies["5"].Task.WaitAsync(TestConstants.DefaultTimeout, TestContext.Current.CancellationToken));
+
+        Assert.Collection(invocations,
+            p =>
+            {
+                Assert.Equal("echo", p?.Name);
+                Assert.Null(p?.Arguments);
+            },
+            p =>
+            {
+                Assert.Equal("echo", p?.Name);
+                Assert.Equal("hi", p?.Arguments?["text"].GetString());
+            },
+            p =>
+            {
+                Assert.Equal("echo", p?.Name);
+                Assert.NotNull(p?.Arguments);
+                Assert.Equal(2, p.Arguments.Count);
+                Assert.Equal("hi", p.Arguments["text"].GetString());
+                Assert.Equal("HI", p.Arguments["Text"].GetString());
+            },
+            p =>
+            {
+                Assert.Equal("echo", p?.Name);
+                Assert.Null(p?.Arguments);
+            });
 
         await transport.DisposeAsync();
         await runTask;
